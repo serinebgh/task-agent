@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Task Agent",
+  "version": "1.0",
+  "description": "Gestion de tâches avec Claude AI",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Task Agent"
+  },
+  "permissions": ["storage"],
+  "host_permissions": ["https://api.anthropic.com/*"]
+}
