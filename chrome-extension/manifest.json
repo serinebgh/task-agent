@@ -7,6 +7,17 @@
     "default_popup": "popup.html",
     "default_title": "Task Agent"
   },
-  "permissions": ["storage"],
-  "host_permissions": ["https://api.anthropic.com/*"]
+  "permissions": ["storage", "alarms", "notifications", "tabs"],
+  "host_permissions": ["https://api.anthropic.com/*", "<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
 }

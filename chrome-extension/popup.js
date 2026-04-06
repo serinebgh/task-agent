@@ -14,6 +14,7 @@ function renderTasks(tasks) {
     <div class="task-item ${t.done ? 'done' : ''}" data-index="${i}">
       <span class="check-btn">${t.done ? '✔' : '○'}</span>
       ${t.task}
+      ${t.deadline ? '<span class="deadline-tag">' + formatDeadline(t.deadline) + '</span>' : ''}
     </div>
   `).join('');
 
@@ -23,6 +24,16 @@ function renderTasks(tasks) {
       markDone(index);
     });
   });
+}
+
+function formatDeadline(ts) {
+  const diff = ts - Date.now();
+  if (diff <= 0) return 'Expiree';
+  const min = Math.floor(diff / 60000);
+  if (min < 60) return 'dans ' + min + ' min';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return 'dans ' + h + 'h' + (m > 0 ? m + 'min' : '');
 }
 
 const SYSTEM_PROMPT = `
@@ -150,6 +161,7 @@ function markDone(index) {
   });
 }
 
+// Clé API
 document.getElementById('save-key-btn').addEventListener('click', () => {
   const key = document.getElementById('api-key').value;
   if (key.trim()) {
@@ -171,6 +183,7 @@ document.getElementById('user-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') document.getElementById('send-btn').click();
 });
 
+// Chargement initial
 loadTasks(renderTasks);
 
 getStoredKey().then((key) => {
@@ -179,3 +192,41 @@ getStoredKey().then((key) => {
     document.querySelector('.api-key-area').style.display = 'none';
   }
 });
+
+// Bouton ON/OFF bulle
+const toggleBtn = document.getElementById('toggle-bubble-btn');
+
+function updateToggleBtn(visible) {
+  toggleBtn.textContent = visible ? 'Visible' : 'Cachee';
+  toggleBtn.style.background = visible ? '#a78bfa' : '#16213e';
+  toggleBtn.style.color = visible ? 'white' : '#555';
+  toggleBtn.style.borderColor = visible ? '#a78bfa' : '#555';
+}
+
+chrome.storage.local.get(['bubbleVisible'], (r) => {
+  const visible = r.bubbleVisible !== false;
+  updateToggleBtn(visible);
+});
+
+toggleBtn.addEventListener('click', () => {
+  chrome.storage.local.get(['bubbleVisible'], (r) => {
+    const newVal = r.bubbleVisible === false;
+    chrome.storage.local.set({ bubbleVisible: newVal });
+    updateToggleBtn(newVal);
+
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (!tabs || !tabs[0] || !tabs[0].id) return;
+      const url = tabs[0].url || '';
+      if (url.startsWith('chrome://') || url.startsWith('chrome-extension://')) return;
+      chrome.tabs.sendMessage(tabs[0].id, {
+        type: 'toggle-bubble',
+        visible: newVal
+      }).catch(() => {});
+    });
+  });
+});
+
+// Rafraichit le compte a rebours toutes les 30 secondes
+setInterval(() => {
+  loadTasks(renderTasks);
+}, 30000);
