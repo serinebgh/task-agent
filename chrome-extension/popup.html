@@ -6,33 +6,35 @@
 </head>
 <body>
   <div class="container">
-    <h1> Task Agent</h1>
+    <h1>✓ Task Agent</h1>
 
     <div class="toggle-area">
-     <span>Bulle sur la page</span>
-     <button id="toggle-bubble-btn">Visible</button>
+      <span>Bulle sur la page</span>
+      <button id="toggle-bubble-btn">Visible</button>
     </div>
 
-    <div id="task-list">
-      <!-- les tâches s'affichent ici -->
-    </div>
+    <div id="task-list"></div>
 
     <div class="input-area">
-      <input 
-        type="text" 
-        id="user-input" 
-        placeholder="Ex: ajoute faire la vaisselle…"
-        autofocus
-      />
+      <input type="text" id="user-input" placeholder="Ex: ajoute faire la vaisselle…" autofocus />
       <button id="send-btn">Envoyer</button>
     </div>
 
     <div id="status"></div>
 
-    <div class="api-key-area">
-      <input type="password" id="api-key" placeholder="Ta clé API Anthropic" />
+    <div class="section-title">Clés API</div>
+
+    <div class="api-key-area" id="anthropic-key-area">
+      <input type="password" id="api-key" placeholder="Clé Anthropic (claude-…)" />
       <button id="save-key-btn">Sauvegarder</button>
     </div>
+
+    <div class="api-key-area" id="openai-key-area">
+      <input type="password" id="openai-key" placeholder="Clé OpenAI (sk-…) — pour Whisper" />
+      <button id="save-openai-key-btn">Sauvegarder</button>
+    </div>
+
+    <div id="keys-status"></div>
   </div>
   <script src="popup.js"></script>
 </body>

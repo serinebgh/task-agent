@@ -14,8 +14,10 @@ h1 { font-size: 18px; margin-bottom: 12px; color: #a78bfa; }
   background: #16213e;
   border-radius: 8px;
   padding: 10px;
-  min-height: 80px;
+  min-height: 60px;
   margin-bottom: 12px;
+  max-height: 180px;
+  overflow-y: auto;
 }
 
 .task-item {
@@ -24,10 +26,14 @@ h1 { font-size: 18px; margin-bottom: 12px; color: #a78bfa; }
   gap: 8px;
   padding: 6px 0;
   border-bottom: 1px solid #0f3460;
-  font-size: 14px;
+  font-size: 13px;
+  flex-wrap: wrap;
 }
 .task-item.done { text-decoration: line-through; opacity: 0.5; }
 .task-item span { cursor: pointer; }
+
+.deadline-tag { font-size: 11px; color: #a78bfa; margin-left: 4px; }
+.time-tag { font-size: 11px; color: #fbbf24; margin-left: 4px; }
 
 .input-area { display: flex; gap: 8px; margin-bottom: 8px; }
 
@@ -38,7 +44,7 @@ input[type="text"], input[type="password"] {
   border: 1px solid #0f3460;
   background: #16213e;
   color: #e0e0e0;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 button {
@@ -48,13 +54,42 @@ button {
   border: none;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
 }
 button:hover { background: #7c3aed; }
 
-#status { font-size: 12px; color: #a78bfa; min-height: 18px; margin-bottom: 8px; }
+#status { font-size: 12px; color: #a78bfa; min-height: 18px; margin-bottom: 10px; }
 
-.api-key-area { display: flex; gap: 8px; margin-top: 8px; }
+.section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #555577;
+  margin-bottom: 8px;
+  margin-top: 4px;
+}
+
+.api-key-area {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+  transition: opacity 0.2s;
+}
+
+.api-key-area.saved {
+  opacity: 0.6;
+}
+
+.api-key-area.saved input {
+  border-color: #6ee7b733;
+}
+
+#keys-status {
+  font-size: 11px;
+  color: #6ee7b7;
+  min-height: 16px;
+  margin-top: 2px;
+}
 
 .toggle-area {
   display: flex;
@@ -69,10 +104,4 @@ button:hover { background: #7c3aed; }
   font-size: 12px;
   background: #16213e;
   border: 1px solid #a78bfa;
-}
-
-.toggle-area button.hidden {
-  border-color: #555;
-  color: #555;
-  background: #16213e;
 }
