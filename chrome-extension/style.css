@@ -55,3 +55,24 @@ button:hover { background: #7c3aed; }
 #status { font-size: 12px; color: #a78bfa; min-height: 18px; margin-bottom: 8px; }
 
 .api-key-area { display: flex; gap: 8px; margin-top: 8px; }
+
+.toggle-area {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+
+.toggle-area button {
+  padding: 4px 12px;
+  font-size: 12px;
+  background: #16213e;
+  border: 1px solid #a78bfa;
+}
+
+.toggle-area button.hidden {
+  border-color: #555;
+  color: #555;
+  background: #16213e;
+}
