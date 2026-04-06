@@ -2,33 +2,35 @@ function setStatus(msg) {
   document.getElementById('status').textContent = msg;
 }
 
+function setKeysStatus(msg, color) {
+  const el = document.getElementById('keys-status');
+  el.textContent = msg;
+  el.style.color = color || '#a78bfa';
+}
+
 function renderTasks(tasks) {
   const list = document.getElementById('task-list');
-
   if (tasks.length === 0) {
     list.innerHTML = '<p style="opacity:0.5;font-size:13px">Aucune tâche pour l\'instant.</p>';
     return;
   }
-
+  const priorityDot = { high: '🔴 ', medium: '🟡 ', low: '🟢 ' };
   list.innerHTML = tasks.map((t, i) => `
     <div class="task-item ${t.done ? 'done' : ''}" data-index="${i}">
       <span class="check-btn">${t.done ? '✔' : '○'}</span>
-      ${t.task}
+      ${t.priority ? priorityDot[t.priority] : ''}${t.task}
       ${t.deadline ? '<span class="deadline-tag">' + formatDeadline(t.deadline) + '</span>' : ''}
+      ${t.estimatedTime ? '<span class="time-tag">⏱ ' + t.estimatedTime + '</span>' : ''}
     </div>
   `).join('');
-
   list.querySelectorAll('.check-btn').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const index = parseInt(btn.parentElement.dataset.index);
-      markDone(index);
-    });
+    btn.addEventListener('click', () => markDone(parseInt(btn.parentElement.dataset.index)));
   });
 }
 
 function formatDeadline(ts) {
   const diff = ts - Date.now();
-  if (diff <= 0) return 'Expiree';
+  if (diff <= 0) return 'Expirée';
   const min = Math.floor(diff / 60000);
   if (min < 60) return 'dans ' + min + ' min';
   const h = Math.floor(min / 60);
@@ -46,30 +48,14 @@ Les actions possibles sont :
 - {"action": "unknown"}
 
 Règles STRICTES :
-- "add" uniquement si l'utilisateur veut AJOUTER une nouvelle tâche (ajoute, je dois faire, rappelle-moi de, n'oublie pas)
-- "done" uniquement si l'utilisateur dit explicitement qu'une tâche est TERMINÉE/FINIE/COMPLÉTÉE + précise laquelle
+- "add" uniquement si l'utilisateur veut AJOUTER une nouvelle tâche
+- "done" uniquement si l'utilisateur dit explicitement qu'une tâche est TERMINÉE + précise laquelle
 - "list" si l'utilisateur veut VOIR ses tâches
 - "unknown" dans tous les autres cas
-
-Exemples ADD :
-- "ajoute faire la vaisselle" → {"action": "add", "task": "faire la vaisselle"}
-- "je dois faire un projet" → {"action": "add", "task": "faire un projet"}
-- "n'oublie pas la réunion" → {"action": "add", "task": "réunion"}
-
-Exemples DONE :
-- "la tâche 1 est terminée" → {"action": "done", "index": 0}
-- "j'ai fini la tâche 2" → {"action": "done", "index": 1}
-- "marquer la tâche 0 comme faite" → {"action": "done", "index": 0}
-
-Exemples UNKNOWN :
-- "bonjour" → {"action": "unknown"}
-- "merci" → {"action": "unknown"}
 `;
 
 function loadTasks(callback) {
-  chrome.storage.local.get(['tasks'], (result) => {
-    callback(result.tasks || []);
-  });
+  chrome.storage.local.get(['tasks'], (result) => callback(result.tasks || []));
 }
 
 function saveTasks(tasks) {
@@ -77,21 +63,13 @@ function saveTasks(tasks) {
 }
 
 function getStoredKey() {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(['apiKey'], (r) => resolve(r.apiKey || ''));
-  });
+  return new Promise((resolve) => chrome.storage.local.get(['apiKey'], (r) => resolve(r.apiKey || '')));
 }
 
 async function runAgent(userInput) {
   const apiKey = document.getElementById('api-key').value || (await getStoredKey());
-
-  if (!apiKey) {
-    setStatus('Entre ta clé API Anthropic ci-dessous.');
-    return;
-  }
-
+  if (!apiKey) { setStatus('Entre ta clé API Anthropic ci-dessous.'); return; }
   setStatus('Claude réfléchit...');
-
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -108,30 +86,18 @@ async function runAgent(userInput) {
         messages: [{ role: 'user', content: userInput }]
       })
     });
-
     const data = await response.json();
-
-    if (!data.content || !data.content[0]) {
-      setStatus('Erreur API : ' + (data.error?.message || 'réponse vide'));
-      return;
-    }
-
+    if (!data.content || !data.content[0]) { setStatus('Erreur API : ' + (data.error?.message || 'réponse vide')); return; }
     let jsonText = data.content[0].text.trim();
-    if (jsonText.startsWith('```')) {
-      jsonText = jsonText.split('```')[1].replace(/^json/, '').trim();
-    }
-
+    if (jsonText.startsWith('```')) jsonText = jsonText.split('```')[1].replace(/^json/, '').trim();
     const command = JSON.parse(jsonText);
-
     loadTasks((tasks) => {
       if (command.action === 'add') {
         tasks.push({ task: command.task, done: false });
         saveTasks(tasks);
         setStatus('Tâche ajoutée : ' + command.task);
-
       } else if (command.action === 'list') {
         setStatus(tasks.length + ' tâche(s)');
-
       } else if (command.action === 'done') {
         if (tasks[command.index] !== undefined) {
           tasks[command.index].done = true;
@@ -140,14 +106,11 @@ async function runAgent(userInput) {
         } else {
           setStatus('Tâche introuvable.');
         }
-
       } else {
         setStatus("Je n'ai pas compris.");
       }
-
       renderTasks(tasks);
     });
-
   } catch (err) {
     setStatus('Erreur : ' + err.message);
   }
@@ -161,22 +124,29 @@ function markDone(index) {
   });
 }
 
-// Clé API
+// ── Clés API ────────────────────────────────────────────────────────────────
+
 document.getElementById('save-key-btn').addEventListener('click', () => {
-  const key = document.getElementById('api-key').value;
-  if (key.trim()) {
+  const key = document.getElementById('api-key').value.trim();
+  if (key) {
     chrome.storage.local.set({ apiKey: key });
-    setStatus('Clé sauvegardée.');
-    document.querySelector('.api-key-area').style.display = 'none';
+    setKeysStatus('✓ Clé Anthropic sauvegardée.', '#6ee7b7');
+    document.getElementById('anthropic-key-area').classList.add('saved');
+  }
+});
+
+document.getElementById('save-openai-key-btn').addEventListener('click', () => {
+  const key = document.getElementById('openai-key').value.trim();
+  if (key) {
+    chrome.storage.local.set({ openaiKey: key });
+    setKeysStatus('✓ Clé OpenAI sauvegardée — Whisper activé !', '#6ee7b7');
+    document.getElementById('openai-key-area').classList.add('saved');
   }
 });
 
 document.getElementById('send-btn').addEventListener('click', () => {
   const input = document.getElementById('user-input');
-  if (input.value.trim()) {
-    runAgent(input.value.trim());
-    input.value = '';
-  }
+  if (input.value.trim()) { runAgent(input.value.trim()); input.value = ''; }
 });
 
 document.getElementById('user-input').addEventListener('keydown', (e) => {
@@ -186,10 +156,15 @@ document.getElementById('user-input').addEventListener('keydown', (e) => {
 // Chargement initial
 loadTasks(renderTasks);
 
-getStoredKey().then((key) => {
-  if (key) {
-    document.getElementById('api-key').value = key;
-    document.querySelector('.api-key-area').style.display = 'none';
+chrome.storage.local.get(['apiKey', 'openaiKey'], (r) => {
+  if (r.apiKey) {
+    document.getElementById('api-key').value = r.apiKey;
+    document.getElementById('anthropic-key-area').classList.add('saved');
+  }
+  if (r.openaiKey) {
+    document.getElementById('openai-key').value = r.openaiKey;
+    document.getElementById('openai-key-area').classList.add('saved');
+    setKeysStatus('✓ Whisper activé', '#6ee7b7');
   }
 });
 
@@ -197,36 +172,26 @@ getStoredKey().then((key) => {
 const toggleBtn = document.getElementById('toggle-bubble-btn');
 
 function updateToggleBtn(visible) {
-  toggleBtn.textContent = visible ? 'Visible' : 'Cachee';
+  toggleBtn.textContent = visible ? 'Visible' : 'Cachée';
   toggleBtn.style.background = visible ? '#a78bfa' : '#16213e';
   toggleBtn.style.color = visible ? 'white' : '#555';
   toggleBtn.style.borderColor = visible ? '#a78bfa' : '#555';
 }
 
-chrome.storage.local.get(['bubbleVisible'], (r) => {
-  const visible = r.bubbleVisible !== false;
-  updateToggleBtn(visible);
-});
+chrome.storage.local.get(['bubbleVisible'], (r) => updateToggleBtn(r.bubbleVisible !== false));
 
 toggleBtn.addEventListener('click', () => {
   chrome.storage.local.get(['bubbleVisible'], (r) => {
     const newVal = r.bubbleVisible === false;
     chrome.storage.local.set({ bubbleVisible: newVal });
     updateToggleBtn(newVal);
-
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (!tabs || !tabs[0] || !tabs[0].id) return;
       const url = tabs[0].url || '';
       if (url.startsWith('chrome://') || url.startsWith('chrome-extension://')) return;
-      chrome.tabs.sendMessage(tabs[0].id, {
-        type: 'toggle-bubble',
-        visible: newVal
-      }).catch(() => {});
+      chrome.tabs.sendMessage(tabs[0].id, { type: 'toggle-bubble', visible: newVal }).catch(() => {});
     });
   });
 });
 
-// Rafraichit le compte a rebours toutes les 30 secondes
-setInterval(() => {
-  loadTasks(renderTasks);
-}, 30000);
+setInterval(() => loadTasks(renderTasks), 30000);
