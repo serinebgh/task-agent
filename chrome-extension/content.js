@@ -6,10 +6,142 @@ let pendingReminders = [];
 let firedReminders = {};
 let attachedFiles = [];
 
+// ── Focus mode state ─────────────────────────────────────────────────────────
+let focusState = {
+  active: false,
+  taskName: '',
+  mode: 'pomodoro',
+  phase: 'work',
+  totalSeconds: 25 * 60,
+  remainingSeconds: 25 * 60,
+  running: false,
+  interval: null,
+  pomodoroCount: 0,
+  freeMinutes: 25
+};
+
+// ── Focus check popup ─────────────────────────────────────────────────────────
+const focusCheckPopup = document.createElement('div');
+focusCheckPopup.id = 'focus-check-popup';
+focusCheckPopup.innerHTML = `
+  <div id="fcp-inner">
+    <div id="fcp-icon">TA</div>
+    <div id="fcp-title">Session focus en cours</div>
+    <div id="fcp-task"></div>
+    <p id="fcp-question">Cette page fait partie de ton focus ?</p>
+    <div id="fcp-btns">
+      <button id="fcp-yes">Oui, c'est lié</button>
+      <button id="fcp-no">Non, distraction</button>
+    </div>
+    <div id="fcp-timer-zone" style="display:none">
+      <p id="fcp-timer-question">Combien de temps tu as besoin ?</p>
+      <div id="fcp-timer-btns">
+        <button class="fcp-duration" data-min="0">Juste regarder</button>
+        <button class="fcp-duration" data-min="1">1 min</button>
+        <button class="fcp-duration" data-min="2">2 min</button>
+        <button class="fcp-duration" data-min="5">5 min</button>
+      </div>
+      <div id="fcp-countdown" style="display:none"></div>
+    </div>
+  </div>
+`;
+document.body.appendChild(focusCheckPopup);
+
+document.getElementById('fcp-yes').addEventListener('click', () => {
+  focusCheckPopup.classList.remove('open');
+});
+
+document.getElementById('fcp-no').addEventListener('click', () => {
+  document.getElementById('fcp-btns').style.display = 'none';
+  document.getElementById('fcp-question').style.display = 'none';
+  document.getElementById('fcp-timer-zone').style.display = 'block';
+});
+
+document.querySelectorAll('.fcp-duration').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const mins = parseInt(btn.dataset.min);
+    document.getElementById('fcp-timer-btns').style.display = 'none';
+    document.getElementById('fcp-timer-question').style.display = 'none';
+
+    if (mins === 0) {
+      focusCheckPopup.classList.remove('open');
+      scheduleFocusReturn(focusCheckPopup.dataset.task, 0.5);
+      return;
+    }
+
+    const countdown = document.getElementById('fcp-countdown');
+    countdown.style.display = 'block';
+    let remaining = mins * 60;
+
+    const tick = () => {
+      const m = Math.floor(remaining / 60).toString().padStart(2, '0');
+      const s = (remaining % 60).toString().padStart(2, '0');
+      countdown.innerHTML = `
+        <div class="fcp-countdown-label">Retour au focus dans</div>
+        <div class="fcp-countdown-timer">${m}:${s}</div>
+        <button id="fcp-back-now">Retourner maintenant</button>
+      `;
+      document.getElementById('fcp-back-now')?.addEventListener('click', () => {
+        clearInterval(countInterval);
+        focusCheckPopup.classList.remove('open');
+      });
+      if (remaining <= 0) {
+        clearInterval(countInterval);
+        showFocusReturnAlert(focusCheckPopup.dataset.task);
+        focusCheckPopup.classList.remove('open');
+      }
+      remaining--;
+    };
+
+    tick();
+    const countInterval = setInterval(tick, 1000);
+    scheduleFocusReturn(focusCheckPopup.dataset.task, mins);
+  });
+});
+
+function scheduleFocusReturn(taskName, mins) {
+  if (mins <= 0) return;
+  chrome.runtime.sendMessage({
+    type: 'set-alarm',
+    name: 'focus-return|' + taskName,
+    when: Date.now() + mins * 60 * 1000
+  }).catch(() => {});
+}
+
+function showFocusReturnAlert(taskName) {
+  const alert = document.createElement('div');
+  alert.id = 'focus-return-alert';
+  alert.innerHTML = `
+    <span>Retourne sur <strong>${taskName}</strong></span>
+    <button id="fra-close">×</button>
+  `;
+  document.body.appendChild(alert);
+  document.getElementById('fra-close')?.addEventListener('click', () => alert.remove());
+  setTimeout(() => alert?.remove(), 8000);
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === 'focus-check') {
+    focusCheckPopup.dataset.task = msg.taskName;
+    document.getElementById('fcp-task').textContent = msg.taskName;
+    document.getElementById('fcp-btns').style.display = 'flex';
+    document.getElementById('fcp-question').style.display = 'block';
+    document.getElementById('fcp-timer-zone').style.display = 'none';
+    document.getElementById('fcp-countdown').style.display = 'none';
+    focusCheckPopup.classList.add('open');
+  }
+  if (msg.type === 'focus-return-alert') showFocusReturnAlert(msg.taskName);
+  if (msg.type === 'toggle-bubble') {
+    bubble.style.visibility = msg.visible ? 'visible' : 'hidden';
+    if (!msg.visible) panel.classList.remove('open');
+  }
+  if (msg.type === 'reminder') { showNotification(msg.text); renderBubbleTasks(); }
+});
+
 // ── Bulle ────────────────────────────────────────────────────────────────────
 const bubble = document.createElement('div');
 bubble.id = 'task-bubble';
-bubble.textContent = '✓';
+bubble.textContent = 'TA';
 document.body.appendChild(bubble);
 
 // ── Panel principal ──────────────────────────────────────────────────────────
@@ -17,56 +149,90 @@ const panel = document.createElement('div');
 panel.id = 'task-panel';
 panel.innerHTML = `
   <div id="task-panel-header">
-    <span>Mes tâches</span>
-    <span id="task-panel-close">✕</span>
+    <span>Tâches</span>
+    <span id="task-panel-close">×</span>
   </div>
   <div id="bubble-task-list"></div>
   <div id="task-input-area">
     <div class="input-with-mic">
-      <input type="text" id="bubble-input" placeholder="Nom de la tâche..." />
-      <button class="mic-btn" id="mic-btn-main" title="Dicter la tâche">🎙️</button>
+      <input type="text" id="bubble-input" placeholder="Nouvelle tâche..." />
+      <button class="mic-btn" id="mic-btn-main" title="Dicter">🎙️</button>
     </div>
     <div id="mic-status-main" class="mic-status"></div>
     <input type="number" id="bubble-deadline" placeholder="Deadline dans X min (optionnel)" min="1" />
     <input type="text" id="bubble-reminders" placeholder="Rappels : 60, 30, 10 min avant (optionnel)" />
     <button id="bubble-add-btn">Ajouter</button>
-    <button id="bubble-organize-btn">✦ Organiser avec Claude</button>
+    <button id="bubble-organize-btn">Organiser avec Claude</button>
   </div>
   <div id="bubble-status"></div>
 `;
 document.body.appendChild(panel);
 
-// ── Panel Organiser multimodal ───────────────────────────────────────────────
+// ── Panel Organiser ──────────────────────────────────────────────────────────
 const organizePanel = document.createElement('div');
 organizePanel.id = 'organize-panel';
 organizePanel.innerHTML = `
   <div id="organize-header">
-    <span>✦ Organiser avec Claude</span>
-    <span id="organize-close">✕</span>
+    <span>Organiser avec Claude</span>
+    <span id="organize-close">×</span>
   </div>
-  <p id="organize-hint">Décris ta situation à l'écrit ou à voix haute, ajoute des PDF ou images — Claude organise tout.</p>
-  <div class="input-with-mic">
-    <textarea id="organize-input" placeholder="Ex: J'ai un projet dev à rendre vendredi avec la doc, les tests et le déploiement..."></textarea>
-    <button class="mic-btn mic-btn-top" id="mic-btn-organize" title="Dicter ta situation">🎙️</button>
+  <div id="organize-scrollable">
+    <p id="organize-hint">Décris ta situation à l'écrit ou à voix haute, ajoute des PDF ou images.</p>
+    <div class="input-with-mic">
+      <textarea id="organize-input" placeholder="Ex : projet dev à rendre vendredi, réunion demain matin, courses ce soir..."></textarea>
+      <button class="mic-btn mic-btn-top" id="mic-btn-organize" title="Dicter">🎙️</button>
+    </div>
+    <div id="mic-status-organize" class="mic-status"></div>
+    <div id="drop-zone">
+      <span id="drop-icon">+</span>
+      <span id="drop-label">Glisse tes fichiers ici<br><small>ou</small></span>
+      <label id="drop-btn-label">
+        Choisir des fichiers
+        <input type="file" id="file-input" accept=".pdf,image/*" multiple style="display:none" />
+      </label>
+      <span id="drop-formats">PDF · PNG · JPG · WEBP</span>
+    </div>
+    <div id="file-preview-list"></div>
+    <button id="organize-send-btn">Analyser et organiser</button>
+    <div id="organize-result"></div>
   </div>
-  <div id="mic-status-organize" class="mic-status"></div>
-  <div id="drop-zone">
-    <span id="drop-icon">📎</span>
-    <span id="drop-label">Glisse tes fichiers ici<br><small>ou</small></span>
-    <label id="drop-btn-label">
-      Choisir des fichiers
-      <input type="file" id="file-input" accept=".pdf,image/*" multiple style="display:none" />
-    </label>
-    <span id="drop-formats">PDF · PNG · JPG · WEBP</span>
-  </div>
-  <div id="file-preview-list"></div>
-  <button id="organize-send-btn">Analyser et organiser</button>
-  <div id="organize-result"></div>
   <div id="organize-actions" style="display:none">
-    <button id="organize-import-btn">✓ Importer toutes les tâches</button>
+    <button id="organize-add-group-btn">+ Groupe</button>
+    <button id="organize-import-btn">Importer les tâches</button>
   </div>
 `;
 document.body.appendChild(organizePanel);
+
+// ── Focus overlay ─────────────────────────────────────────────────────────────
+const focusOverlay = document.createElement('div');
+focusOverlay.id = 'focus-overlay';
+focusOverlay.innerHTML = `
+  <div id="focus-card">
+    <div id="focus-phase-label">Session de focus</div>
+    <div id="focus-task-name">Tâche</div>
+    <div id="focus-pomodoro-dots"></div>
+    <div id="focus-timer-display">25:00</div>
+    <div id="focus-mode-tabs">
+      <button class="focus-tab active" data-mode="pomodoro">Pomodoro</button>
+      <button class="focus-tab" data-mode="free">Timer libre</button>
+    </div>
+    <div id="focus-free-input" style="display:none">
+      <input type="number" id="focus-free-minutes" value="25" min="1" max="180" />
+      <span>minutes</span>
+    </div>
+    <div id="focus-controls">
+      <button id="focus-start-btn">Démarrer</button>
+      <button id="focus-pause-btn" style="display:none">Pause</button>
+      <button id="focus-skip-btn" style="display:none">Passer</button>
+    </div>
+    <div id="focus-actions">
+      <button id="focus-done-btn">Terminée</button>
+      <button id="focus-exit-btn">Quitter</button>
+    </div>
+    <div id="focus-tab-warning" style="display:none"></div>
+  </div>
+`;
+document.body.appendChild(focusOverlay);
 
 // ── Modale rappel ────────────────────────────────────────────────────────────
 const overlay = document.createElement('div');
@@ -75,7 +241,7 @@ overlay.innerHTML = `
   <div id="task-modal">
     <div id="task-modal-title">Rappel</div>
     <div id="task-modal-list"></div>
-    <button id="task-modal-close">OK, compris</button>
+    <button id="task-modal-close">OK</button>
   </div>
 `;
 document.body.appendChild(overlay);
@@ -85,7 +251,6 @@ document.getElementById('task-modal-close').addEventListener('click', () => {
   pendingReminders = [];
 });
 
-// Init bulle
 bubble.style.bottom = '30px';
 bubble.style.right = '30px';
 bubble.style.top = 'auto';
@@ -101,28 +266,20 @@ chrome.storage.onChanged.addListener((changes) => {
     if (!visible) panel.classList.remove('open');
   }
 });
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === 'toggle-bubble') {
-    bubble.style.visibility = msg.visible ? 'visible' : 'hidden';
-    if (!msg.visible) panel.classList.remove('open');
-  }
-  if (msg.type === 'reminder') { showNotification(msg.text); renderBubbleTasks(); }
-});
 
 // ── Drag bulle ───────────────────────────────────────────────────────────────
 bubble.addEventListener('mousedown', (e) => {
   isDragging = true; hasMoved = false;
   bubble.classList.add('dragging');
   const rect = bubble.getBoundingClientRect();
-  offsetX = e.clientX - rect.left;
-  offsetY = e.clientY - rect.top;
+  offsetX = e.clientX - rect.left; offsetY = e.clientY - rect.top;
   e.preventDefault();
 });
 document.addEventListener('mousemove', (e) => {
   if (!isDragging) return;
   hasMoved = true;
-  const x = Math.max(0, Math.min(e.clientX - offsetX, window.innerWidth - 52));
-  const y = Math.max(0, Math.min(e.clientY - offsetY, window.innerHeight - 52));
+  const x = Math.max(0, Math.min(e.clientX - offsetX, window.innerWidth - 44));
+  const y = Math.max(0, Math.min(e.clientY - offsetY, window.innerHeight - 44));
   bubble.style.left = x + 'px'; bubble.style.top = y + 'px';
   bubble.style.right = 'auto'; bubble.style.bottom = 'auto';
   if (panel.classList.contains('open')) positionPanel();
@@ -156,49 +313,191 @@ document.getElementById('organize-close').addEventListener('click', () => {
   resetOrganizePanel();
 });
 
-// ── Whisper — enregistrement audio ──────────────────────────────────────────
+// ── FOCUS MODE ───────────────────────────────────────────────────────────────
+function startFocusMode(taskName) {
+  focusState.active = true;
+  focusState.taskName = taskName;
+  focusState.phase = 'work';
+  focusState.running = false;
+  focusState.pomodoroCount = 0;
+  chrome.runtime.sendMessage({ type: 'focus-start', taskName }).catch(() => {});
+  panel.classList.remove('open');
+  organizePanel.classList.remove('open');
+  setFocusMode('pomodoro');
+  focusOverlay.classList.add('open');
+  document.getElementById('focus-task-name').textContent = taskName;
+  updateFocusDots();
+  resetFocusButtons();
+}
 
+function setFocusMode(mode) {
+  focusState.mode = mode;
+  document.querySelectorAll('.focus-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+  const freeInput = document.getElementById('focus-free-input');
+  if (mode === 'pomodoro') {
+    freeInput.style.display = 'none';
+    focusState.totalSeconds = 25 * 60;
+  } else {
+    freeInput.style.display = 'flex';
+    focusState.totalSeconds = (parseInt(document.getElementById('focus-free-minutes').value) || 25) * 60;
+  }
+  focusState.remainingSeconds = focusState.totalSeconds;
+  updateTimerDisplay();
+  updatePhaseLabel();
+}
+
+function updatePhaseLabel() {
+  const label = document.getElementById('focus-phase-label');
+  if (focusState.mode === 'pomodoro') {
+    label.textContent = focusState.phase === 'work' ? 'Session de focus' : 'Pause';
+    label.className = focusState.phase === 'work' ? '' : 'break-phase';
+  } else {
+    label.textContent = 'Timer libre';
+    label.className = '';
+  }
+}
+
+function updateFocusDots() {
+  const dots = document.getElementById('focus-pomodoro-dots');
+  if (focusState.mode !== 'pomodoro') { dots.innerHTML = ''; return; }
+  dots.innerHTML = Array.from({ length: 4 }, (_, i) =>
+    `<span class="focus-dot ${i < focusState.pomodoroCount ? 'done' : ''}"></span>`
+  ).join('');
+}
+
+function updateTimerDisplay() {
+  const m = Math.floor(focusState.remainingSeconds / 60).toString().padStart(2, '0');
+  const s = (focusState.remainingSeconds % 60).toString().padStart(2, '0');
+  document.getElementById('focus-timer-display').textContent = m + ':' + s;
+}
+
+function resetFocusButtons() {
+  document.getElementById('focus-start-btn').style.display = 'inline-flex';
+  document.getElementById('focus-pause-btn').style.display = 'none';
+  document.getElementById('focus-skip-btn').style.display = 'none';
+}
+
+function tickFocus() {
+  if (focusState.remainingSeconds <= 0) {
+    clearInterval(focusState.interval);
+    focusState.running = false;
+    onTimerEnd();
+    return;
+  }
+  focusState.remainingSeconds--;
+  updateTimerDisplay();
+}
+
+function onTimerEnd() {
+  resetFocusButtons();
+  if (focusState.mode === 'pomodoro') {
+    if (focusState.phase === 'work') {
+      focusState.pomodoroCount++;
+      updateFocusDots();
+      focusState.phase = 'break';
+      focusState.totalSeconds = focusState.pomodoroCount % 4 === 0 ? 15 * 60 : 5 * 60;
+      focusState.remainingSeconds = focusState.totalSeconds;
+      showFocusMsg('Pomodoro terminé. Prends une pause.', '#6a9a7a');
+    } else {
+      focusState.phase = 'work';
+      focusState.totalSeconds = 25 * 60;
+      focusState.remainingSeconds = focusState.totalSeconds;
+      showFocusMsg('Pause terminée. Retour au travail.', '#9088c8');
+    }
+    updatePhaseLabel();
+    updateTimerDisplay();
+  } else {
+    showFocusMsg('Timer terminé.', '#6a9a7a');
+  }
+}
+
+function showFocusMsg(msg, color) {
+  const warn = document.getElementById('focus-tab-warning');
+  warn.textContent = msg;
+  warn.style.color = color || '#6a9a7a';
+  warn.style.display = 'block';
+  setTimeout(() => { warn.style.display = 'none'; }, 4000);
+}
+
+function exitFocusMode() {
+  clearInterval(focusState.interval);
+  focusState.active = false;
+  focusState.running = false;
+  focusOverlay.classList.remove('open');
+  chrome.runtime.sendMessage({ type: 'focus-end' }).catch(() => {});
+}
+
+document.querySelectorAll('.focus-tab').forEach(tab => {
+  tab.addEventListener('click', () => { if (!focusState.running) setFocusMode(tab.dataset.mode); });
+});
+
+document.getElementById('focus-free-minutes').addEventListener('input', (e) => {
+  if (focusState.running) return;
+  focusState.totalSeconds = (parseInt(e.target.value) || 25) * 60;
+  focusState.remainingSeconds = focusState.totalSeconds;
+  updateTimerDisplay();
+});
+
+document.getElementById('focus-start-btn').addEventListener('click', () => {
+  focusState.running = true;
+  focusState.interval = setInterval(tickFocus, 1000);
+  document.getElementById('focus-start-btn').style.display = 'none';
+  document.getElementById('focus-pause-btn').style.display = 'inline-flex';
+  document.getElementById('focus-skip-btn').style.display = 'inline-flex';
+  updatePhaseLabel();
+});
+
+document.getElementById('focus-pause-btn').addEventListener('click', () => {
+  if (focusState.running) {
+    clearInterval(focusState.interval); focusState.running = false;
+    document.getElementById('focus-pause-btn').textContent = 'Reprendre';
+  } else {
+    focusState.interval = setInterval(tickFocus, 1000); focusState.running = true;
+    document.getElementById('focus-pause-btn').textContent = 'Pause';
+  }
+});
+
+document.getElementById('focus-skip-btn').addEventListener('click', () => {
+  clearInterval(focusState.interval); focusState.running = false;
+  focusState.remainingSeconds = 0; onTimerEnd();
+});
+
+document.getElementById('focus-done-btn').addEventListener('click', () => {
+  chrome.storage.local.get(['tasks'], (result) => {
+    const tasks = result.tasks || [];
+    const idx = tasks.findIndex(t => t.task === focusState.taskName || t.task.replace('  └ ', '') === focusState.taskName);
+    if (idx !== -1) { tasks[idx].done = true; chrome.storage.local.set({ tasks }); }
+  });
+  exitFocusMode();
+  setBubbleStatus('Tâche terminée.');
+});
+
+document.getElementById('focus-exit-btn').addEventListener('click', exitFocusMode);
+
+// ── Whisper ──────────────────────────────────────────────────────────────────
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 
 async function startRecording(micBtn, statusEl, targetInputId) {
-  if (isRecording) {
-    stopRecording();
-    return;
-  }
-
+  if (isRecording) { stopRecording(); return; }
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     audioChunks = [];
     mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-
-    mediaRecorder.addEventListener('dataavailable', (e) => {
-      if (e.data.size > 0) audioChunks.push(e.data);
-    });
-
+    mediaRecorder.addEventListener('dataavailable', (e) => { if (e.data.size > 0) audioChunks.push(e.data); });
     mediaRecorder.addEventListener('stop', async () => {
       stream.getTracks().forEach(t => t.stop());
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      await transcribeWithWhisper(blob, targetInputId, statusEl);
+      await transcribeWithWhisper(new Blob(audioChunks, { type: 'audio/webm' }), targetInputId, statusEl);
     });
-
-    mediaRecorder.start();
-    isRecording = true;
-    micBtn.classList.add('recording');
-    micBtn.textContent = '⏹️';
-    statusEl.textContent = '🔴 Enregistrement... (clic pour arrêter)';
-    statusEl.classList.add('active');
-
-  } catch (err) {
-    statusEl.textContent = 'Micro inaccessible : ' + err.message;
-  }
+    mediaRecorder.start(); isRecording = true;
+    micBtn.classList.add('recording'); micBtn.textContent = '⏹️';
+    statusEl.textContent = 'Enregistrement en cours...'; statusEl.classList.add('active');
+  } catch (err) { statusEl.textContent = 'Micro inaccessible : ' + err.message; }
 }
 
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-    mediaRecorder.stop();
-  }
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   isRecording = false;
 }
 
@@ -206,94 +505,60 @@ async function transcribeWithWhisper(audioBlob, targetInputId, statusEl) {
   const micBtn = targetInputId === 'bubble-input'
     ? document.getElementById('mic-btn-main')
     : document.getElementById('mic-btn-organize');
-
-  micBtn.textContent = '⏳';
-  statusEl.textContent = 'Transcription en cours...';
-
+  micBtn.textContent = '⏳'; statusEl.textContent = 'Transcription...';
   const openaiKey = await getOpenAIKey();
   if (!openaiKey) {
-    statusEl.textContent = '⚠️ Clé OpenAI manquante — configure-la dans le popup.';
-    micBtn.textContent = '🎙️';
-    micBtn.classList.remove('recording');
-    return;
+    statusEl.textContent = 'Clé OpenAI manquante.';
+    micBtn.textContent = '🎙️'; micBtn.classList.remove('recording'); return;
   }
-
   try {
     const formData = new FormData();
     formData.append('file', audioBlob, 'audio.webm');
     formData.append('model', 'whisper-1');
     formData.append('language', 'fr');
-
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + openaiKey },
-      body: formData
+      method: 'POST', headers: { 'Authorization': 'Bearer ' + openaiKey }, body: formData
     });
-
     const data = await response.json();
     if (data.error) throw new Error(data.error.message);
-
-    const transcription = data.text.trim();
-    const targetInput = document.getElementById(targetInputId);
-
-    if (targetInput) {
-      // Ajoute au texte existant si déjà du contenu
-      if (targetInput.value.trim()) {
-        targetInput.value += ' ' + transcription;
-      } else {
-        targetInput.value = transcription;
-      }
-      targetInput.focus();
-    }
-
-    statusEl.textContent = '✓ Transcrit : "' + transcription.substring(0, 60) + (transcription.length > 60 ? '…' : '') + '"';
+    const t = data.text.trim();
+    const el = document.getElementById(targetInputId);
+    if (el) { el.value = el.value.trim() ? el.value + ' ' + t : t; el.focus(); }
+    statusEl.textContent = t.substring(0, 60) + (t.length > 60 ? '…' : '');
     setTimeout(() => { statusEl.textContent = ''; statusEl.classList.remove('active'); }, 4000);
-
   } catch (err) {
-    statusEl.textContent = '⚠️ Erreur Whisper : ' + err.message;
+    statusEl.textContent = 'Erreur : ' + err.message;
     setTimeout(() => { statusEl.textContent = ''; statusEl.classList.remove('active'); }, 4000);
   }
-
-  micBtn.textContent = '🎙️';
-  micBtn.classList.remove('recording');
+  micBtn.textContent = '🎙️'; micBtn.classList.remove('recording');
 }
 
-// Bouton micro panel principal
 document.getElementById('mic-btn-main').addEventListener('click', () => {
-  const statusEl = document.getElementById('mic-status-main');
+  const s = document.getElementById('mic-status-main');
   if (isRecording) {
     stopRecording();
     document.getElementById('mic-btn-main').textContent = '🎙️';
     document.getElementById('mic-btn-main').classList.remove('recording');
-    statusEl.textContent = 'Arrêt...';
-  } else {
-    startRecording(document.getElementById('mic-btn-main'), statusEl, 'bubble-input');
-  }
+    s.textContent = '';
+  } else startRecording(document.getElementById('mic-btn-main'), s, 'bubble-input');
 });
 
-// Bouton micro panel organiser
 document.getElementById('mic-btn-organize').addEventListener('click', () => {
-  const statusEl = document.getElementById('mic-status-organize');
+  const s = document.getElementById('mic-status-organize');
   if (isRecording) {
     stopRecording();
     document.getElementById('mic-btn-organize').textContent = '🎙️';
     document.getElementById('mic-btn-organize').classList.remove('recording');
-    statusEl.textContent = 'Arrêt...';
-  } else {
-    startRecording(document.getElementById('mic-btn-organize'), statusEl, 'organize-input');
-  }
+    s.textContent = '';
+  } else startRecording(document.getElementById('mic-btn-organize'), s, 'organize-input');
 });
 
-// ── Gestion fichiers ─────────────────────────────────────────────────────────
+// ── Fichiers ─────────────────────────────────────────────────────────────────
 const dropZone = document.getElementById('drop-zone');
 const fileInput = document.getElementById('file-input');
-
 dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
-dropZone.addEventListener('drop', (e) => {
-  e.preventDefault(); dropZone.classList.remove('drag-over');
-  addFiles(Array.from(e.dataTransfer.files));
-});
+dropZone.addEventListener('drop', (e) => { e.preventDefault(); dropZone.classList.remove('drag-over'); addFiles(Array.from(e.dataTransfer.files)); });
 fileInput.addEventListener('change', () => { addFiles(Array.from(fileInput.files)); fileInput.value = ''; });
 
 function addFiles(files) {
@@ -310,15 +575,16 @@ function renderFilePreviews() {
   const list = document.getElementById('file-preview-list');
   if (attachedFiles.length === 0) { list.innerHTML = ''; return; }
   list.innerHTML = attachedFiles.map((f, i) => {
-    const icon = f.type.startsWith('image/') ? '🖼️' : '📄';
-    const size = f.size < 1024 * 1024 ? Math.round(f.size / 1024) + ' Ko' : (f.size / (1024 * 1024)).toFixed(1) + ' Mo';
-    return `
-      <div class="file-preview-item">
-        <span class="fp-icon">${icon}</span>
-        <span class="fp-name">${f.name}</span>
-        <span class="fp-size">${size}</span>
-        <span class="fp-remove" data-index="${i}">✕</span>
-      </div>`;
+    const type = f.type.startsWith('image/') ? 'img' : 'pdf';
+    const size = f.size < 1024 * 1024
+      ? Math.round(f.size / 1024) + ' Ko'
+      : (f.size / (1024 * 1024)).toFixed(1) + ' Mo';
+    return `<div class="file-preview-item">
+      <span class="fp-icon">${type}</span>
+      <span class="fp-name">${f.name}</span>
+      <span class="fp-size">${size}</span>
+      <span class="fp-remove" data-index="${i}">×</span>
+    </div>`;
   }).join('');
   list.querySelectorAll('.fp-remove').forEach(btn => {
     btn.addEventListener('click', () => { attachedFiles.splice(parseInt(btn.dataset.index), 1); renderFilePreviews(); });
@@ -334,104 +600,57 @@ function fileToBase64(file) {
   });
 }
 
-// ── Analyse Claude multimodal ────────────────────────────────────────────────
+// ── Analyse Claude ────────────────────────────────────────────────────────────
 let generatedTasks = [];
-
 document.getElementById('organize-send-btn').addEventListener('click', runOrganize);
 
 async function runOrganize() {
   const textInput = document.getElementById('organize-input').value.trim();
   if (!textInput && attachedFiles.length === 0) return;
-
   const resultDiv = document.getElementById('organize-result');
   const actionsDiv = document.getElementById('organize-actions');
   const btn = document.getElementById('organize-send-btn');
-
-  btn.textContent = 'Analyse en cours...';
-  btn.disabled = true;
-  resultDiv.innerHTML = '<div class="organize-loading">⏳ Claude analyse ta situation...</div>';
+  btn.textContent = 'Analyse en cours...'; btn.disabled = true;
+  resultDiv.innerHTML = '<div class="organize-loading">Analyse en cours...</div>';
   actionsDiv.style.display = 'none';
-
   const apiKey = await getApiKey();
   if (!apiKey) {
-    resultDiv.innerHTML = '<div class="organize-error">Clé Anthropic introuvable. Configure-la dans le popup.</div>';
-    btn.textContent = 'Analyser et organiser'; btn.disabled = false;
-    return;
+    resultDiv.innerHTML = '<div class="organize-error">Clé Anthropic introuvable.</div>';
+    btn.textContent = 'Analyser et organiser'; btn.disabled = false; return;
   }
-
-  const SYSTEM = `Tu es un expert en gestion de tâches et organisation du travail.
-L'utilisateur te décrit sa situation en texte, et peut aussi joindre des PDF ou images.
-
-Analyse TOUT le contenu fourni et retourne UNIQUEMENT un JSON valide, sans markdown, sans texte avant ou après.
-
-Format attendu :
-{
-  "summary": "Résumé très court de la situation analysée",
-  "groups": [
-    {
-      "name": "Nom du groupe/projet",
-      "priority": "high|medium|low",
-      "deadline": "description courte si mentionnée, sinon null",
-      "estimated_time": "ex: 2h30, 45min, null si inconnu",
-      "subtasks": [
-        { "name": "sous-tâche", "time": "30min" }
-      ]
-    }
-  ],
-  "recommended_order": ["nom groupe 1", "nom groupe 2"],
-  "total_estimated": "temps total estimé"
-}
-
-Règles :
-- priority "high" = urgent (aujourd'hui, demain, deadline très proche)
-- priority "medium" = cette semaine
-- priority "low" = pas de deadline précise
-- Déduis les sous-tâches intelligemment même si non mentionnées
-- Si un PDF ou une image est fourni, extrait les tâches qu'il implique
-- Estime des temps réalistes`;
-
+  const SYSTEM = `Tu es un expert en gestion de tâches. Retourne UNIQUEMENT un JSON valide.
+Format : {"summary":"...","groups":[{"name":"...","priority":"high|medium|low","deadline":"...ou null","estimated_time":"...ou null","subtasks":[{"name":"...","time":"..."}]}],"recommended_order":["..."],"total_estimated":"..."}`;
   try {
     const contentBlocks = [];
     if (textInput) contentBlocks.push({ type: 'text', text: textInput });
     for (const file of attachedFiles) {
       const base64 = await fileToBase64(file);
-      if (file.type === 'application/pdf') {
+      if (file.type === 'application/pdf')
         contentBlocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } });
-      } else {
+      else
         contentBlocks.push({ type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } });
-      }
     }
-    if (contentBlocks.length === 0) return;
-
+    if (!contentBlocks.length) return;
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-opus-4-6',
-        max_tokens: 2000,
-        system: SYSTEM,
-        messages: [{ role: 'user', content: contentBlocks }]
-      })
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({ model: 'claude-opus-4-6', max_tokens: 2000, system: SYSTEM, messages: [{ role: 'user', content: contentBlocks }] })
     });
-
     const data = await response.json();
-    if (!data.content || !data.content[0]) throw new Error('Réponse vide');
+    if (!data.content?.[0]) throw new Error('Réponse vide');
     let raw = data.content[0].text.trim();
     if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/, '').trim();
     const parsed = JSON.parse(raw);
     generatedTasks = parsed.groups || [];
     renderOrganizeResult(parsed);
-    actionsDiv.style.display = 'block';
-
+    actionsDiv.style.display = 'flex';
+    // Scroll automatique vers les actions
+    setTimeout(() => {
+      actionsDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 100);
   } catch (err) {
     resultDiv.innerHTML = '<div class="organize-error">Erreur : ' + err.message + '</div>';
   }
-
   btn.textContent = 'Analyser et organiser'; btn.disabled = false;
 }
 
@@ -439,50 +658,148 @@ function renderOrganizeResult(parsed) {
   const resultDiv = document.getElementById('organize-result');
   const groups = parsed.groups || [];
   if (!groups.length) { resultDiv.innerHTML = '<div class="organize-error">Aucune tâche détectée.</div>'; return; }
-
-  const priorityLabel = { high: '🔴 Urgent', medium: '🟡 Cette semaine', low: '🟢 Flexible' };
   let html = '';
   if (parsed.summary) html += `<div class="org-summary">${parsed.summary}</div>`;
-  if (parsed.total_estimated) html += `<div class="org-total">⏱ Total estimé : <strong>${parsed.total_estimated}</strong></div>`;
-  if (parsed.recommended_order && parsed.recommended_order.length > 1) {
-    html += `<div class="org-order">📋 Ordre : ${parsed.recommended_order.map((n, i) => `<span class="ord-num">${i+1}</span>${n}`).join(' → ')}</div>`;
-  }
-  html += groups.map(g => `
-    <div class="org-group priority-${g.priority}">
-      <div class="org-group-header">
-        <span class="org-priority-badge ${g.priority}">${priorityLabel[g.priority] || g.priority}</span>
-        <span class="org-group-name">${g.name}</span>
-      </div>
-      <div class="org-group-meta">
-        ${g.deadline ? '<span class="org-deadline">📅 ' + g.deadline + '</span>' : ''}
-        ${g.estimated_time ? '<span class="org-time">⏱ ' + g.estimated_time + '</span>' : ''}
-      </div>
-      <ul class="org-subtasks">
-        ${(g.subtasks || []).map(s => `
-          <li class="org-subtask">
-            <span class="org-subtask-check">└</span>
-            <span class="org-subtask-name">${typeof s === 'string' ? s : s.name}</span>
-            ${s.time ? '<span class="org-subtask-time">' + s.time + '</span>' : ''}
-          </li>`).join('')}
-      </ul>
-    </div>
-  `).join('');
+  if (parsed.total_estimated) html += `<div class="org-total">Total estimé : <strong>${parsed.total_estimated}</strong></div>`;
+  html += groups.map((g, gi) => renderGroupHTML(g, gi)).join('');
   resultDiv.innerHTML = html;
+  attachGroupListeners(resultDiv);
 }
+
+function renderGroupHTML(g, gi) {
+  const priorityLabel = { high: '!', medium: '–', low: '·' };
+  return `<div class="org-group priority-${g.priority}" data-group="${gi}">
+    <div class="org-group-header">
+      <span class="org-priority-toggle" data-group="${gi}" title="Changer la priorité">${priorityLabel[g.priority] || '–'}</span>
+      <span class="org-group-name editable" data-group="${gi}" data-field="name" contenteditable="true" spellcheck="false">${g.name}</span>
+      <span class="org-group-time editable-small" data-group="${gi}" data-field="estimated_time" contenteditable="true" spellcheck="false">${g.estimated_time || '—'}</span>
+      <span class="org-delete-group" data-group="${gi}" title="Supprimer">×</span>
+    </div>
+    ${g.deadline ? `<div class="org-deadline-edit"><span class="editable-small" data-group="${gi}" data-field="deadline" contenteditable="true" spellcheck="false">${g.deadline}</span></div>` : ''}
+    <ul class="org-subtasks" data-group="${gi}">${(g.subtasks || []).map((s, si) => renderSubtaskHTML(s, gi, si)).join('')}</ul>
+    <button class="org-add-subtask" data-group="${gi}">+ sous-tâche</button>
+  </div>`;
+}
+
+function renderSubtaskHTML(s, gi, si) {
+  const name = typeof s === 'string' ? s : s.name;
+  const time = typeof s === 'string' ? '' : (s.time || '');
+  return `<li class="org-subtask" data-group="${gi}" data-sub="${si}">
+    <span class="org-subtask-check">—</span>
+    <span class="org-subtask-name editable-small" data-group="${gi}" data-sub="${si}" data-field="name" contenteditable="true" spellcheck="false">${name}</span>
+    <span class="org-subtask-time editable-small" data-group="${gi}" data-sub="${si}" data-field="time" contenteditable="true" spellcheck="false">${time || '—'}</span>
+    <span class="org-delete-sub" data-group="${gi}" data-sub="${si}" title="Supprimer">×</span>
+  </li>`;
+}
+
+function attachGroupListeners(container) {
+  container.querySelectorAll('[contenteditable]').forEach(el => {
+    el.addEventListener('blur', () => syncEditToData(el));
+    el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
+  });
+  container.querySelectorAll('.org-priority-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const gi = parseInt(btn.dataset.group);
+      const cycle = { high: 'medium', medium: 'low', low: 'high' };
+      generatedTasks[gi].priority = cycle[generatedTasks[gi].priority] || 'medium';
+      refreshGroup(gi);
+    });
+  });
+  container.querySelectorAll('.org-delete-group').forEach(btn => {
+    btn.addEventListener('click', () => { generatedTasks.splice(parseInt(btn.dataset.group), 1); refreshAllGroups(); });
+  });
+  container.querySelectorAll('.org-delete-sub').forEach(btn => {
+    btn.addEventListener('click', () => {
+      generatedTasks[parseInt(btn.dataset.group)].subtasks.splice(parseInt(btn.dataset.sub), 1);
+      refreshGroup(parseInt(btn.dataset.group));
+    });
+  });
+  container.querySelectorAll('.org-add-subtask').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const gi = parseInt(btn.dataset.group);
+      if (!generatedTasks[gi].subtasks) generatedTasks[gi].subtasks = [];
+      generatedTasks[gi].subtasks.push({ name: 'Nouvelle sous-tâche', time: '' });
+      refreshGroup(gi);
+      setTimeout(() => {
+        const items = document.querySelectorAll(`.org-group[data-group="${gi}"] .org-subtask-name`);
+        if (items.length) {
+          const last = items[items.length - 1];
+          last.focus();
+          const r = document.createRange();
+          r.selectNodeContents(last);
+          window.getSelection().removeAllRanges();
+          window.getSelection().addRange(r);
+        }
+      }, 50);
+    });
+  });
+}
+
+function syncEditToData(el) {
+  const gi = parseInt(el.dataset.group);
+  const si = el.dataset.sub !== undefined ? parseInt(el.dataset.sub) : null;
+  const field = el.dataset.field;
+  const value = el.textContent.trim();
+  if (si !== null) {
+    if (!generatedTasks[gi]?.subtasks[si]) return;
+    if (typeof generatedTasks[gi].subtasks[si] === 'string')
+      generatedTasks[gi].subtasks[si] = { name: generatedTasks[gi].subtasks[si], time: '' };
+    generatedTasks[gi].subtasks[si][field] = value;
+  } else {
+    generatedTasks[gi][field] = value;
+  }
+}
+
+function refreshGroup(gi) {
+  const groupEl = document.querySelector(`.org-group[data-group="${gi}"]`);
+  if (!groupEl) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = renderGroupHTML(generatedTasks[gi], gi);
+  groupEl.replaceWith(tmp.firstElementChild);
+  attachGroupListeners(document.getElementById('organize-result'));
+}
+
+function refreshAllGroups() {
+  const resultDiv = document.getElementById('organize-result');
+  const s = resultDiv.querySelector('.org-summary');
+  const t = resultDiv.querySelector('.org-total');
+  let html = (s ? s.outerHTML : '') + (t ? t.outerHTML : '');
+  html += generatedTasks.map((g, gi) => renderGroupHTML(g, gi)).join('');
+  resultDiv.innerHTML = html;
+  attachGroupListeners(resultDiv);
+}
+
+document.getElementById('organize-add-group-btn').addEventListener('click', () => {
+  generatedTasks.push({ name: 'Nouveau groupe', priority: 'medium', deadline: null, estimated_time: null, subtasks: [] });
+  refreshAllGroups();
+  document.getElementById('organize-actions').style.display = 'flex';
+  setTimeout(() => {
+    const groups = document.querySelectorAll('.org-group-name');
+    if (groups.length) {
+      const last = groups[groups.length - 1];
+      last.focus();
+      const r = document.createRange();
+      r.selectNodeContents(last);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(r);
+    }
+  }, 50);
+});
 
 document.getElementById('organize-import-btn').addEventListener('click', () => {
   if (!generatedTasks.length) return;
+  document.querySelectorAll('[contenteditable]:focus').forEach(el => syncEditToData(el));
   chrome.storage.local.get(['tasks'], (result) => {
     const tasks = result.tasks || [];
     generatedTasks.forEach(group => {
       tasks.push({ task: group.name, done: false, deadline: null, reminders: [], isGroup: true, priority: group.priority, estimatedTime: group.estimated_time || null });
       (group.subtasks || []).forEach(sub => {
         const subName = typeof sub === 'string' ? sub : sub.name;
-        tasks.push({ task: '  └ ' + subName, done: false, deadline: null, reminders: [], parentGroup: group.name });
+        if (subName) tasks.push({ task: '  ' + subName, done: false, deadline: null, reminders: [], parentGroup: group.name });
       });
     });
     chrome.storage.local.set({ tasks }, () => {
-      setBubbleStatus('✓ Tâches importées !');
+      setBubbleStatus('Tâches importées.');
       organizePanel.classList.remove('open');
       resetOrganizePanel();
       panel.classList.add('open');
@@ -493,8 +810,7 @@ document.getElementById('organize-import-btn').addEventListener('click', () => {
 });
 
 function resetOrganizePanel() {
-  attachedFiles = []; renderFilePreviews();
-  generatedTasks = [];
+  attachedFiles = []; renderFilePreviews(); generatedTasks = [];
   document.getElementById('organize-result').innerHTML = '';
   document.getElementById('organize-actions').style.display = 'none';
   document.getElementById('organize-input').value = '';
@@ -504,7 +820,7 @@ function resetOrganizePanel() {
 // ── Positionnement ───────────────────────────────────────────────────────────
 function positionPanel() {
   const rect = bubble.getBoundingClientRect();
-  const panelW = 310, panelH = panel.offsetHeight || 380;
+  const panelW = 300, panelH = panel.offsetHeight || 380;
   let top = rect.bottom + 8;
   if (top + panelH > window.innerHeight - 10) top = rect.top - panelH - 8;
   let left = rect.left;
@@ -515,7 +831,7 @@ function positionPanel() {
 
 function positionOrganizePanel() {
   const rect = bubble.getBoundingClientRect();
-  const w = 360, h = 560;
+  const w = 360, h = 580;
   let top = rect.bottom + 8;
   if (top + h > window.innerHeight - 10) top = rect.top - h - 8;
   let left = rect.left;
@@ -525,25 +841,19 @@ function positionOrganizePanel() {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-function getApiKey() {
-  return new Promise((resolve) => chrome.storage.local.get(['apiKey'], (r) => resolve(r.apiKey || '')));
-}
-function getOpenAIKey() {
-  return new Promise((resolve) => chrome.storage.local.get(['openaiKey'], (r) => resolve(r.openaiKey || '')));
-}
+function getApiKey() { return new Promise(r => chrome.storage.local.get(['apiKey'], d => r(d.apiKey || ''))); }
+function getOpenAIKey() { return new Promise(r => chrome.storage.local.get(['openaiKey'], d => r(d.openaiKey || ''))); }
 
 function addTask() {
   const input = document.getElementById('bubble-input');
   const deadlineInput = document.getElementById('bubble-deadline');
   const remindersInput = document.getElementById('bubble-reminders');
-  const text = input.value.trim();
-  if (!text) return;
+  const text = input.value.trim(); if (!text) return;
   const deadlineMinutes = parseInt(deadlineInput.value);
   const deadline = (!isNaN(deadlineMinutes) && deadlineMinutes > 0) ? Date.now() + deadlineMinutes * 60 * 1000 : null;
   let reminders = [];
-  if (deadline && remindersInput.value.trim()) {
+  if (deadline && remindersInput.value.trim())
     reminders = remindersInput.value.split(',').map(r => parseInt(r.trim())).filter(r => !isNaN(r) && r > 0);
-  }
   chrome.storage.local.get(['tasks'], (result) => {
     const tasks = result.tasks || [];
     tasks.push({ task: text, done: false, deadline, reminders });
@@ -551,29 +861,23 @@ function addTask() {
       input.value = ''; deadlineInput.value = ''; remindersInput.value = '';
       setBubbleStatus('Tâche ajoutée.');
       renderBubbleTasks();
-      if (deadline && reminders.length > 0) {
-        reminders.forEach(minBefore => {
-          const when = deadline - minBefore * 60 * 1000;
-          if (when > Date.now()) chrome.runtime.sendMessage({ type: 'set-alarm', name: text + '|' + minBefore, when });
-        });
-      } else if (deadline) {
-        const when = deadline - 5 * 60 * 1000;
-        if (when > Date.now()) chrome.runtime.sendMessage({ type: 'set-alarm', name: text + '|5', when });
+      if (deadline && reminders.length > 0)
+        reminders.forEach(m => { const w = deadline - m * 60 * 1000; if (w > Date.now()) chrome.runtime.sendMessage({ type: 'set-alarm', name: text + '|' + m, when: w }); });
+      else if (deadline) {
+        const w = deadline - 5 * 60 * 1000;
+        if (w > Date.now()) chrome.runtime.sendMessage({ type: 'set-alarm', name: text + '|5', when: w });
       }
     });
   });
 }
 
 function formatDeadline(ts) {
-  const diff = ts - Date.now();
-  if (diff <= 0) return 'Expirée';
-  const min = Math.floor(diff / 60000);
-  const sec = Math.floor((diff % 60000) / 1000);
-  if (min === 0) return 'dans ' + sec + 's';
-  if (min < 60) return 'dans ' + min + 'min ' + sec + 's';
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return 'dans ' + h + 'h' + (m > 0 ? m + 'min' : '');
+  const diff = ts - Date.now(); if (diff <= 0) return 'expirée';
+  const min = Math.floor(diff / 60000), sec = Math.floor((diff % 60000) / 1000);
+  if (min === 0) return sec + 's';
+  if (min < 60) return min + 'min';
+  const h = Math.floor(min / 60), m = min % 60;
+  return h + 'h' + (m > 0 ? m + 'm' : '');
 }
 
 function renderBubbleTasks() {
@@ -581,22 +885,30 @@ function renderBubbleTasks() {
     const tasks = result.tasks || [];
     const list = document.getElementById('bubble-task-list');
     if (!list) return;
-    if (tasks.length === 0) { list.innerHTML = '<p class="bubble-task-empty">Aucune tâche pour l\'instant.</p>'; return; }
-    const priorityDot = { high: '🔴 ', medium: '🟡 ', low: '🟢 ' };
+    if (tasks.length === 0) {
+      list.innerHTML = '<p class="bubble-task-empty">Aucune tâche.</p>';
+      return;
+    }
+    const priorityMark = { high: '! ', medium: '– ', low: '  ' };
     list.innerHTML = tasks.map((t, i) => {
-      const deadlineHtml = t.deadline ? '<span class="bubble-deadline">Deadline : ' + formatDeadline(t.deadline) + '</span>' : '';
-      const remindersHtml = (t.reminders && t.reminders.length > 0) ? '<span class="bubble-reminders-tag">Rappels : ' + t.reminders.join(', ') + ' min</span>' : '';
-      const timeHtml = t.estimatedTime ? '<span class="bubble-time">⏱ ' + t.estimatedTime + '</span>' : '';
-      const dot = t.priority ? priorityDot[t.priority] : '';
-      return `
-        <div class="bubble-task-item ${t.done ? 'done' : ''} ${t.isGroup ? 'is-group' : ''} ${t.task.startsWith('  └') ? 'is-sub' : ''}" data-index="${i}">
-          <span class="bubble-check">${t.done ? '✔' : '○'}</span>
-          <span class="bubble-task-text">${dot}${t.task}${deadlineHtml}${remindersHtml}${timeHtml}</span>
-          <span class="bubble-delete" data-index="${i}">✕</span>
-        </div>`;
+      const deadlineHtml = t.deadline ? '<span class="bubble-deadline">' + formatDeadline(t.deadline) + '</span>' : '';
+      const remindersHtml = (t.reminders?.length > 0) ? '<span class="bubble-reminders-tag">' + t.reminders.join(', ') + ' min</span>' : '';
+      const timeHtml = t.estimatedTime ? '<span class="bubble-time">' + t.estimatedTime + '</span>' : '';
+      const mark = t.priority ? priorityMark[t.priority] : '';
+      const taskLabel = t.task.startsWith('  ') ? t.task.trim() : t.task;
+      return `<div class="bubble-task-item ${t.done ? 'done' : ''} ${t.isGroup ? 'is-group' : ''} ${t.task.startsWith('  ') && !t.isGroup ? 'is-sub' : ''}" data-index="${i}">
+        <span class="bubble-check">${t.done ? '×' : '·'}</span>
+        <span class="bubble-task-text">${mark}${t.task.trim()}${deadlineHtml}${remindersHtml}${timeHtml}</span>
+        <span class="bubble-focus-btn" data-task="${taskLabel}" title="Focus">F</span>
+        <span class="bubble-delete" data-index="${i}" title="Supprimer">×</span>
+      </div>`;
     }).join('');
-    list.querySelectorAll('.bubble-check').forEach(btn => btn.addEventListener('click', () => toggleTask(parseInt(btn.closest('.bubble-task-item').dataset.index))));
-    list.querySelectorAll('.bubble-delete').forEach(btn => btn.addEventListener('click', () => deleteTask(parseInt(btn.dataset.index))));
+    list.querySelectorAll('.bubble-check').forEach(btn =>
+      btn.addEventListener('click', () => toggleTask(parseInt(btn.closest('.bubble-task-item').dataset.index))));
+    list.querySelectorAll('.bubble-delete').forEach(btn =>
+      btn.addEventListener('click', () => deleteTask(parseInt(btn.dataset.index))));
+    list.querySelectorAll('.bubble-focus-btn').forEach(btn =>
+      btn.addEventListener('click', () => { panel.classList.remove('open'); startFocusMode(btn.dataset.task); }));
   });
 }
 
@@ -617,27 +929,25 @@ function deleteTask(index) {
 }
 
 function setBubbleStatus(msg) {
-  const s = document.getElementById('bubble-status');
-  if (!s) return;
-  s.textContent = msg;
-  setTimeout(() => { s.textContent = ''; }, 2500);
+  const s = document.getElementById('bubble-status'); if (!s) return;
+  s.textContent = msg; setTimeout(() => { s.textContent = ''; }, 2500);
 }
 
 function showNotification(msg) {
   pendingReminders.push(msg);
-  const list = document.getElementById('task-modal-list');
-  list.innerHTML = pendingReminders.map(r => '<div class="modal-reminder-item">' + r + '</div>').join('');
+  document.getElementById('task-modal-list').innerHTML =
+    pendingReminders.map(r => '<div class="modal-reminder-item">' + r + '</div>').join('');
   overlay.classList.add('open');
 }
 
 setInterval(() => { if (panel.classList.contains('open')) renderBubbleTasks(); }, 1000);
+
 setInterval(() => {
   chrome.storage.local.get(['tasks'], (result) => {
-    const tasks = result.tasks || [];
-    const now = Date.now();
+    const tasks = result.tasks || [], now = Date.now();
     tasks.forEach(t => {
       if (t.done || !t.deadline) return;
-      const reminders = t.reminders && t.reminders.length > 0 ? t.reminders : [5];
+      const reminders = t.reminders?.length > 0 ? t.reminders : [5];
       reminders.forEach(minBefore => {
         const triggerTime = t.deadline - minBefore * 60 * 1000;
         const key = t.task + '|' + minBefore;
@@ -645,7 +955,7 @@ setInterval(() => {
           firedReminders[key] = true;
           const diff = t.deadline - now;
           const minLeft = Math.round(diff / 60000);
-          showNotification(t.task + ' — il reste ' + (minLeft > 0 ? minLeft + ' min' : 'moins d\'1 min') + ' avant la deadline');
+          showNotification(t.task + ' — ' + (minLeft > 0 ? minLeft + ' min' : 'moins d\'1 min') + ' restante(s)');
         }
       });
     });

@@ -5,37 +5,154 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="container">
-    <h1>✓ Task Agent</h1>
 
+<!-- ── Onboarding ─────────────────────────────────────────────────────────── -->
+<div id="onboarding">
+  <div id="ob-sidebar">
+    <div id="ob-brand">TA</div>
+    <div id="ob-steps-nav">
+      <div class="ob-step-dot active" data-step="1"></div>
+      <div class="ob-step-dot" data-step="2"></div>
+      <div class="ob-step-dot" data-step="3"></div>
+      <div class="ob-step-dot" data-step="4"></div>
+      <div class="ob-step-dot" data-step="5"></div>
+    </div>
+  </div>
+
+  <div id="ob-main">
+    <div id="ob-meta">
+      <span id="ob-step-label">01 / 05</span>
+      <div id="ob-progress"><div id="ob-progress-bar"></div></div>
+    </div>
+
+    <div id="ob-questions">
+
+      <div class="ob-question active" data-step="1">
+        <p class="ob-q-hint">Commençons par le commencement.</p>
+        <h2 class="ob-q-label">Comment tu t'appelles ?</h2>
+        <input type="text" class="ob-input" id="ob-name" placeholder="Prénom" autocomplete="off" />
+      </div>
+
+      <div class="ob-question" data-step="2">
+        <p class="ob-q-hint">Pour que Claude comprenne ton contexte.</p>
+        <h2 class="ob-q-label">Quel est ton métier ?</h2>
+        <input type="text" class="ob-input" id="ob-job" placeholder="Ex : développeur web, chef de projet, designer..." autocomplete="off" />
+      </div>
+
+      <div class="ob-question" data-step="3">
+        <p class="ob-q-hint">Ce sur quoi tu travailles en ce moment.</p>
+        <h2 class="ob-q-label">Tes projets actuels ?</h2>
+        <textarea class="ob-input ob-textarea" id="ob-projects" placeholder="Décris brièvement tes projets en cours..."></textarea>
+      </div>
+
+      <div class="ob-question" data-step="4">
+        <p class="ob-q-hint">Claude s'adaptera à ta façon de travailler.</p>
+        <h2 class="ob-q-label">Comment tu travailles le mieux ?</h2>
+        <div class="ob-chips" id="ob-work-style">
+          <span class="ob-chip" data-val="le matin">Plutôt le matin</span>
+          <span class="ob-chip" data-val="le soir">Plutôt le soir</span>
+          <span class="ob-chip" data-val="en sprints intensifs">Sprints intensifs</span>
+          <span class="ob-chip" data-val="de façon régulière">Régulier et constant</span>
+          <span class="ob-chip" data-val="en multitâche">Multitâche</span>
+          <span class="ob-chip" data-val="une tâche à la fois">Une tâche à la fois</span>
+        </div>
+        <input type="hidden" id="ob-style-value" />
+      </div>
+
+      <div class="ob-question" data-step="5">
+        <p class="ob-q-hint">Optionnel, mais utile.</p>
+        <h2 class="ob-q-label">Un truc à savoir sur toi ?</h2>
+        <textarea class="ob-input ob-textarea" id="ob-extra" placeholder="Ex : je sous-estime souvent mes tâches, j'ai du mal à dire non, je procrastine sur la documentation..."></textarea>
+      </div>
+
+    </div>
+
+    <div id="ob-nav">
+      <button id="ob-back">Retour</button>
+      <button id="ob-next">Continuer</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── App ─────────────────────────────────────────────────────────────────── -->
+<div id="app">
+  <div id="app-header">
+    <div id="app-brand">TA</div>
+    <nav id="nav-tabs">
+      <button class="nav-tab active" data-tab="tasks">Tâches</button>
+      <button class="nav-tab" data-tab="profile">Profil</button>
+      <button class="nav-tab" data-tab="keys">API</button>
+    </nav>
+  </div>
+
+  <!-- Tab Tâches -->
+  <div id="tab-tasks" class="tab-content active">
     <div class="toggle-area">
-      <span>Bulle sur la page</span>
-      <button id="toggle-bubble-btn">Visible</button>
+      <span class="toggle-label">Bulle flottante</span>
+      <button id="toggle-bubble-btn" class="toggle-btn">Active</button>
     </div>
 
     <div id="task-list"></div>
 
-    <div class="input-area">
-      <input type="text" id="user-input" placeholder="Ex: ajoute faire la vaisselle…" autofocus />
-      <button id="send-btn">Envoyer</button>
+    <div class="input-row">
+      <input type="text" id="user-input" placeholder="Ajoute une tâche en langage naturel..." autofocus />
+      <button id="send-btn">→</button>
     </div>
-
     <div id="status"></div>
+  </div>
 
-    <div class="section-title">Clés API</div>
+  <!-- Tab Profil -->
+  <div id="tab-profile" class="tab-content">
+    <div id="profile-greeting"></div>
 
-    <div class="api-key-area" id="anthropic-key-area">
-      <input type="password" id="api-key" placeholder="Clé Anthropic (claude-…)" />
-      <button id="save-key-btn">Sauvegarder</button>
+    <div class="profile-field">
+      <label>Prénom</label>
+      <input type="text" id="p-name" placeholder="—" />
+    </div>
+    <div class="profile-field">
+      <label>Métier</label>
+      <input type="text" id="p-job" placeholder="—" />
+    </div>
+    <div class="profile-field">
+      <label>Projets en cours</label>
+      <textarea id="p-projects" placeholder="—"></textarea>
+    </div>
+    <div class="profile-field">
+      <label>Style de travail</label>
+      <input type="text" id="p-style" placeholder="—" />
+    </div>
+    <div class="profile-field">
+      <label>À savoir</label>
+      <textarea id="p-extra" placeholder="—"></textarea>
     </div>
 
-    <div class="api-key-area" id="openai-key-area">
-      <input type="password" id="openai-key" placeholder="Clé OpenAI (sk-…) — pour Whisper" />
-      <button id="save-openai-key-btn">Sauvegarder</button>
+    <div class="profile-actions">
+      <button id="save-profile-btn">Enregistrer</button>
+      <span id="profile-status"></span>
     </div>
+  </div>
 
+  <!-- Tab API -->
+  <div id="tab-keys" class="tab-content">
+    <div class="key-block">
+      <div class="key-label">Anthropic — Claude</div>
+      <div class="key-row">
+        <input type="password" id="api-key" placeholder="sk-ant-..." />
+        <button id="save-key-btn">Sauvegarder</button>
+      </div>
+    </div>
+    <div class="key-block">
+      <div class="key-label">OpenAI — Whisper <span class="key-optional">optionnel</span></div>
+      <div class="key-row">
+        <input type="password" id="openai-key" placeholder="sk-..." />
+        <button id="save-openai-key-btn">Sauvegarder</button>
+      </div>
+    </div>
     <div id="keys-status"></div>
   </div>
-  <script src="popup.js"></script>
+
+</div>
+
+<script src="popup.js"></script>
 </body>
 </html>
