@@ -272,12 +272,10 @@
   display: none !important;
   font-family: 'Inter', 'Segoe UI', sans-serif !important;
   color: #d4d4e0 !important;
-  max-height: 85vh !important;
+  max-height: 580px !important;
   overflow: hidden !important;
-  flex-direction: column !important;
-  display: none !important;
 }
-#organize-panel.open { display: flex !important; flex-direction: column !important; }
+#organize-panel.open { display: block !important; }
 
 #organize-header {
   display: flex !important;
@@ -304,10 +302,9 @@
 
 /* Zone scrollable du panel */
 #organize-scrollable {
-  flex: 1 !important;
+  max-height: 460px !important;
   overflow-y: auto !important;
   overflow-x: hidden !important;
-  min-height: 0 !important;
 }
 #organize-scrollable::-webkit-scrollbar { width: 3px !important; }
 #organize-scrollable::-webkit-scrollbar-track { background: transparent !important; }
@@ -539,7 +536,6 @@
   gap: 6px !important;
   padding: 10px 16px !important;
   border-top: 1px solid #1e1e2e !important;
-  flex-shrink: 0 !important;
   background: #111118 !important;
 }
 #organize-add-group-btn {
