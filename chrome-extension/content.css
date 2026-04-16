@@ -919,3 +919,145 @@
 #bubble-task-list::-webkit-scrollbar { width: 3px !important; }
 #bubble-task-list::-webkit-scrollbar-track { background: transparent !important; }
 #bubble-task-list::-webkit-scrollbar-thumb { background: #2a2a3e !important; border-radius: 2px !important; }
+/* ── Bubble Memory Modal ─────────────────────────────────────────────────── */
+#bubble-memory-modal {
+  position: fixed !important;
+  top: 0 !important; left: 0 !important;
+  width: 100vw !important; height: 100vh !important;
+  background: rgba(0,0,0,0.75) !important;
+  z-index: 2147483647 !important;
+  display: none !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-family: 'Inter', 'Segoe UI', sans-serif !important;
+}
+#bubble-memory-modal.open { display: flex !important; }
+
+#bmm-inner {
+  background: #111118 !important;
+  border: 1px solid #2a2a3e !important;
+  border-top: 2px solid #7c6fcd !important;
+  border-radius: 8px !important;
+  padding: 24px !important;
+  width: 340px !important;
+  max-width: 90vw !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.7) !important;
+}
+
+#bmm-title {
+  font-size: 10px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.15em !important;
+  color: #5a5a7a !important;
+  font-weight: 600 !important;
+}
+
+#bmm-suggestion {
+  font-size: 12px !important;
+  color: #7070a0 !important;
+  font-style: italic !important;
+  line-height: 1.5 !important;
+}
+
+#bmm-input {
+  background: #16161f !important;
+  border: 1px solid #2a2a3e !important;
+  border-radius: 4px !important;
+  color: #d4d4e0 !important;
+  font-size: 13px !important;
+  padding: 10px !important;
+  resize: none !important;
+  min-height: 70px !important;
+  outline: none !important;
+  font-family: 'Inter', 'Segoe UI', sans-serif !important;
+  line-height: 1.5 !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
+  transition: border-color 0.15s !important;
+}
+#bmm-input:focus { border-color: #7c6fcd !important; }
+
+#bmm-btns {
+  display: flex !important;
+  gap: 8px !important;
+  justify-content: flex-end !important;
+}
+
+#bmm-skip {
+  padding: 8px 16px !important;
+  background: transparent !important;
+  border: 1px solid #2a2a3e !important;
+  border-radius: 4px !important;
+  color: #5a5a7a !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  font-family: 'Inter', 'Segoe UI', sans-serif !important;
+  transition: all 0.15s !important;
+}
+#bmm-skip:hover { color: #7070a0 !important; border-color: #3d3d5c !important; }
+
+#bmm-save {
+  padding: 8px 16px !important;
+  background: #7c6fcd !important;
+  border: none !important;
+  border-radius: 4px !important;
+  color: white !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  cursor: pointer !important;
+  font-family: 'Inter', 'Segoe UI', sans-serif !important;
+  transition: background 0.15s !important;
+}
+#bmm-save:hover { background: #6355b5 !important; }
+
+/* ── Bulle aujourd hui ───────────────────────────────────────────────────── */
+.bubble-today-header {
+  font-size: 9px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.1em !important;
+  color: #3d3d5c !important;
+  font-weight: 600 !important;
+  padding: 6px 14px 3px !important;
+}
+
+.bubble-schedule-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  padding: 5px 14px !important;
+  border-bottom: 1px solid #1a1a28 !important;
+  font-size: 12px !important;
+  color: #c0c0d8 !important;
+}
+.bubble-schedule-item.past { opacity: 0.4 !important; }
+.bubble-schedule-item.current {
+  background: #1e1a3a !important;
+  border-left: 2px solid #7c6fcd !important;
+}
+
+.bubble-schedule-hour {
+  font-size: 10px !important;
+  color: #5a5a7a !important;
+  font-weight: 600 !important;
+  flex-shrink: 0 !important;
+  min-width: 22px !important;
+}
+.bubble-schedule-name { flex: 1 !important; line-height: 1.4 !important; }
+.bubble-event-tag {
+  font-size: 9px !important;
+  color: #9088c8 !important;
+  background: #1e1a3a !important;
+  padding: 1px 5px !important;
+  border-radius: 3px !important;
+  flex-shrink: 0 !important;
+}
+
+.bubble-more {
+  font-size: 10px !important;
+  color: #3d3d5c !important;
+  text-align: center !important;
+  padding: 4px !important;
+}

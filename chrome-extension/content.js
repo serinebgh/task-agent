@@ -1,3 +1,28 @@
+// Ignore extension context errors silently
+window.addEventListener('error', e => {
+  if (e.message?.includes('Extension context') || e.message?.includes('context invalidated')) {
+    e.preventDefault(); e.stopPropagation(); return true;
+  }
+});
+window.addEventListener('unhandledrejection', e => {
+  if (e.reason?.message?.includes('Extension context') || e.reason?.message?.includes('context invalidated')) {
+    e.preventDefault(); return;
+  }
+});
+
+
+// ── Guard contre "Extension context invalidated" ─────────────────────────────
+function isChromeContextValid() {
+  try { return !!chrome.runtime?.id; } catch(e) { return false; }
+}
+
+function safeChrome(fn) {
+  if (!isChromeContextValid()) return;
+  try { fn(); } catch(e) {
+    if (!e.message?.includes('Extension context')) console.error(e);
+  }
+}
+
 let isDragging = false;
 let offsetX = 0;
 let offsetY = 0;
@@ -155,7 +180,7 @@ panel.innerHTML = `
   <div id="bubble-task-list"></div>
   <div id="task-input-area">
     <div class="input-with-mic">
-      <input type="text" id="bubble-input" placeholder="Nouvelle tâche..." />
+      <input type="text" id="bubble-input" placeholder="Dis-moi ce que tu as à faire..." />
       <button class="mic-btn" id="mic-btn-main" title="Dicter">🎙️</button>
     </div>
     <div id="mic-status-main" class="mic-status"></div>
@@ -618,7 +643,8 @@ async function runOrganize() {
     resultDiv.innerHTML = '<div class="organize-error">Clé Anthropic introuvable.</div>';
     btn.textContent = 'Analyser et organiser'; btn.disabled = false; return;
   }
-  const SYSTEM = `Tu es un expert en gestion de tâches. Retourne UNIQUEMENT un JSON valide.
+  const memCtx = await getMemoryContext();
+  const SYSTEM = `Tu es un expert en gestion de taches.${memCtx ? memCtx + '\n\n' : ''}Retourne UNIQUEMENT un JSON valide.
 Format : {"summary":"...","groups":[{"name":"...","priority":"high|medium|low","deadline":"...ou null","estimated_time":"...ou null","subtasks":[{"name":"...","time":"..."}]}],"recommended_order":["..."],"total_estimated":"..."}`;
   try {
     const contentBlocks = [];
@@ -805,6 +831,10 @@ document.getElementById('organize-import-btn').addEventListener('click', () => {
       panel.classList.add('open');
       positionPanel();
       renderBubbleTasks();
+      const orgInput = document.getElementById('organize-input')?.value || '';
+      if (orgInput.length > 20) {
+        getApiKey().then(key => { if (key) checkAndAskMemory(orgInput, key); });
+      }
     });
   });
 });
@@ -841,32 +871,176 @@ function positionOrganizePanel() {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+// ── Memory ────────────────────────────────────────────────────────────────────
+
+function getMemory() {
+  return new Promise(r => chrome.storage.local.get(['claudeMemory'], d => r(d.claudeMemory || [])));
+}
+
+async function getMemoryContext() {
+  const memories = await getMemory();
+  if (memories.length === 0) return '';
+  return '\n\nMémoire (sessions précédentes) :\n' +
+    memories.map(m => `- ${m.text} (${m.date})`).join('\n');
+}
+
+async function addMemoryEntry(text) {
+  const memories = await getMemory();
+  memories.push({
+    text: text.trim(),
+    date: new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }),
+    timestamp: Date.now()
+  });
+  chrome.storage.local.set({ claudeMemory: memories });
+}
+
+const memoryBubbleModal = document.createElement('div');
+memoryBubbleModal.id = 'bubble-memory-modal';
+memoryBubbleModal.innerHTML = `
+  <div id="bmm-inner">
+    <div id="bmm-title">Retenir quelque chose ?</div>
+    <div id="bmm-suggestion"></div>
+    <textarea id="bmm-input" placeholder="Ce que tu veux que je retienne..."></textarea>
+    <div id="bmm-btns">
+      <button id="bmm-skip">Passer</button>
+      <button id="bmm-save">Retenir</button>
+    </div>
+  </div>
+`;
+document.body.appendChild(memoryBubbleModal);
+
+document.getElementById('bmm-skip').addEventListener('click', () => {
+  memoryBubbleModal.classList.remove('open');
+});
+document.getElementById('bmm-save').addEventListener('click', () => {
+  const text = document.getElementById('bmm-input').value.trim();
+  if (text) addMemoryEntry(text);
+  memoryBubbleModal.classList.remove('open');
+});
+document.getElementById('bmm-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('bmm-save').click(); }
+  if (e.key === 'Escape') memoryBubbleModal.classList.remove('open');
+});
+
+function showBubbleMemoryModal(suggestion) {
+  document.getElementById('bmm-suggestion').textContent = suggestion;
+  document.getElementById('bmm-input').value = suggestion;
+  memoryBubbleModal.classList.add('open');
+  setTimeout(() => document.getElementById('bmm-input').focus(), 100);
+}
+
+async function checkAndAskMemory(userInput, apiKey) {
+  if (userInput.length < 20) return;
+  try {
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 80,
+        system: "Tu analyses un message et decides s'il y a quelque chose d'important a retenir pour les sessions futures. Si oui, reponds avec une phrase courte (max 80 chars). Si non, reponds exactement: NON",
+        messages: [{ role: 'user', content: 'Message: "' + userInput + '"' }]
+      })
+    });
+    const data = await response.json();
+    const suggestion = data.content?.[0]?.text?.trim();
+    if (suggestion && suggestion !== 'NON' && !suggestion.startsWith('NON')) {
+      showBubbleMemoryModal(suggestion);
+    }
+  } catch(e) {}
+}
+
 function getApiKey() { return new Promise(r => chrome.storage.local.get(['apiKey'], d => r(d.apiKey || ''))); }
 function getOpenAIKey() { return new Promise(r => chrome.storage.local.get(['openaiKey'], d => r(d.openaiKey || ''))); }
 
-function addTask() {
+
+async function addTask() {
   const input = document.getElementById('bubble-input');
   const deadlineInput = document.getElementById('bubble-deadline');
   const remindersInput = document.getElementById('bubble-reminders');
-  const text = input.value.trim(); if (!text) return;
-  const deadlineMinutes = parseInt(deadlineInput.value);
-  const deadline = (!isNaN(deadlineMinutes) && deadlineMinutes > 0) ? Date.now() + deadlineMinutes * 60 * 1000 : null;
+  const text = input.value.trim();
+  if (!text) return;
+
+  const btn = document.getElementById('bubble-add-btn');
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  const apiKey = await getApiKey();
+
+  // Si pas de clé API ou message court → ajout direct sans Claude
+  if (!apiKey || text.length < 15) {
+    addTasksDirectly([{ task: text, deadline_minutes: null, priority: 'medium' }], deadlineInput, remindersInput, input);
+    btn.disabled = false; btn.textContent = 'Ajouter';
+    return;
+  }
+
+  try {
+    const memCtx = await getMemoryContext();
+    const profile = await new Promise(r => chrome.storage.local.get(['userProfile'], d => r(d.userProfile || null)));
+    const profileCtx = profile ? `Utilisateur : ${profile.name || ''}${profile.job ? ', ' + profile.job : ''}.${profile.projects ? ' Projets : ' + profile.projects + '.' : ''}` : '';
+
+    const SYSTEM = `Tu es un assistant de gestion de tâches.${profileCtx ? ' ' + profileCtx : ''}${memCtx}
+Quand l'utilisateur te parle, extrait les tâches mentionnées et retourne UNIQUEMENT un JSON valide.
+Format : {"tasks":[{"task":"nom de la tâche","deadline_minutes":null,"priority":"high|medium|low","message":"..."}],"reply":"réponse courte et naturelle"}
+- deadline_minutes : nombre de minutes jusqu'à la deadline (ex: "dans 2 semaines" → 20160), ou null
+- priority : "high" si urgent/important, "medium" par défaut, "low" si secondaire
+- reply : phrase courte confirmant ce que tu as compris et ajouté
+Si l'utilisateur dit juste une phrase de contexte sans tâche claire, crée quand même les tâches logiques qui en découlent.`;
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 400,
+        system: SYSTEM,
+        messages: [{ role: 'user', content: text }]
+      })
+    });
+
+    const data = await response.json();
+    let raw = data.content?.[0]?.text?.trim() || '';
+    if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/, '').trim();
+    const parsed = JSON.parse(raw);
+
+    addTasksDirectly(parsed.tasks || [], deadlineInput, remindersInput, input);
+    if (parsed.reply) setBubbleStatus(parsed.reply);
+
+    // Vérifier si quelque chose vaut la peine d'être mémorisé
+    if (text.length > 20) checkAndAskMemory(text, apiKey);
+
+  } catch (e) {
+    // Fallback : ajout direct si Claude échoue
+    addTasksDirectly([{ task: text, deadline_minutes: null, priority: 'medium' }], deadlineInput, remindersInput, input);
+  }
+
+  btn.disabled = false; btn.textContent = 'Ajouter';
+}
+
+function addTasksDirectly(newTasks, deadlineInput, remindersInput, input) {
+  const deadlineMinutes = deadlineInput ? parseInt(deadlineInput.value) : NaN;
   let reminders = [];
-  if (deadline && remindersInput.value.trim())
+  if (!isNaN(deadlineMinutes) && deadlineMinutes > 0 && remindersInput?.value.trim())
     reminders = remindersInput.value.split(',').map(r => parseInt(r.trim())).filter(r => !isNaN(r) && r > 0);
+
   chrome.storage.local.get(['tasks'], (result) => {
     const tasks = result.tasks || [];
-    tasks.push({ task: text, done: false, deadline, reminders });
-    chrome.storage.local.set({ tasks }, () => {
-      input.value = ''; deadlineInput.value = ''; remindersInput.value = '';
-      setBubbleStatus('Tâche ajoutée.');
-      renderBubbleTasks();
-      if (deadline && reminders.length > 0)
-        reminders.forEach(m => { const w = deadline - m * 60 * 1000; if (w > Date.now()) chrome.runtime.sendMessage({ type: 'set-alarm', name: text + '|' + m, when: w }); });
-      else if (deadline) {
-        const w = deadline - 5 * 60 * 1000;
-        if (w > Date.now()) chrome.runtime.sendMessage({ type: 'set-alarm', name: text + '|5', when: w });
+    newTasks.forEach(t => {
+      const deadlineMins = t.deadline_minutes || (!isNaN(deadlineMinutes) && deadlineMinutes > 0 ? deadlineMinutes : null);
+      const deadline = deadlineMins ? Date.now() + deadlineMins * 60 * 1000 : null;
+      tasks.push({ task: t.task, done: false, deadline, reminders, priority: t.priority || 'medium' });
+      if (deadline) {
+        const alarmList = reminders.length > 0 ? reminders : [5];
+        alarmList.forEach(m => { const w = deadline - m * 60 * 1000; if (w > Date.now()) safeChrome(() => chrome.runtime.sendMessage({ type: 'set-alarm', name: t.task + '|' + m, when: w }).catch(() => {})); });
       }
+    });
+    chrome.storage.local.set({ tasks }, () => {
+      if (input) input.value = '';
+      if (deadlineInput) deadlineInput.value = '';
+      if (remindersInput) remindersInput.value = '';
+      if (!newTasks.length || !newTasks[0]?.task) setBubbleStatus('Aucune tâche détectée.');
+      renderBubbleTasks();
     });
   });
 }
@@ -881,28 +1055,73 @@ function formatDeadline(ts) {
 }
 
 function renderBubbleTasks() {
-  chrome.storage.local.get(['tasks'], (result) => {
+  // Load both tasks and today's schedule
+  chrome.storage.local.get(['tasks', 'planSchedule'], (result) => {
     const tasks = result.tasks || [];
+    const schedule = result.planSchedule || {};
     const list = document.getElementById('bubble-task-list');
     if (!list) return;
-    if (tasks.length === 0) {
-      list.innerHTML = '<p class="bubble-task-empty">Aucune tâche.</p>';
+
+    // Get today's scheduled items
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const now = new Date();
+    const currentHour = now.getHours();
+
+    const todaySchedule = Object.entries(schedule)
+      .filter(([key]) => key.startsWith(todayStr))
+      .map(([key, val]) => ({
+        hour: parseInt(key.split('_')[1]),
+        taskName: val.taskName,
+        isEvent: val.isEvent,
+        isBlocked: val.isBlocked
+      }))
+      .filter(s => !s.isBlocked)
+      .sort((a, b) => a.hour - b.hour);
+
+    const pendingTasks = tasks.filter(t => !t.done && !t.isGroup);
+
+    if (todaySchedule.length === 0 && pendingTasks.length === 0) {
+      list.innerHTML = '<p class="bubble-task-empty">Rien de prevu aujourd hui.</p>';
       return;
     }
-    const priorityMark = { high: '! ', medium: '– ', low: '  ' };
-    list.innerHTML = tasks.map((t, i) => {
-      const deadlineHtml = t.deadline ? '<span class="bubble-deadline">' + formatDeadline(t.deadline) + '</span>' : '';
-      const remindersHtml = (t.reminders?.length > 0) ? '<span class="bubble-reminders-tag">' + t.reminders.join(', ') + ' min</span>' : '';
-      const timeHtml = t.estimatedTime ? '<span class="bubble-time">' + t.estimatedTime + '</span>' : '';
-      const mark = t.priority ? priorityMark[t.priority] : '';
-      const taskLabel = t.task.startsWith('  ') ? t.task.trim() : t.task;
-      return `<div class="bubble-task-item ${t.done ? 'done' : ''} ${t.isGroup ? 'is-group' : ''} ${t.task.startsWith('  ') && !t.isGroup ? 'is-sub' : ''}" data-index="${i}">
-        <span class="bubble-check">${t.done ? '×' : '·'}</span>
-        <span class="bubble-task-text">${mark}${t.task.trim()}${deadlineHtml}${remindersHtml}${timeHtml}</span>
-        <span class="bubble-focus-btn" data-task="${taskLabel}" title="Focus">F</span>
-        <span class="bubble-delete" data-index="${i}" title="Supprimer">×</span>
-      </div>`;
-    }).join('');
+
+    let html = '';
+
+    // Today's schedule first
+    if (todaySchedule.length > 0) {
+      html += '<div class="bubble-today-header">Aujourd hui</div>';
+      todaySchedule.forEach(s => {
+        const isPast = s.hour < currentHour;
+        const isCurrent = s.hour === currentHour;
+        html += '<div class="bubble-schedule-item' + (isPast ? ' past' : '') + (isCurrent ? ' current' : '') + '">' +
+          '<span class="bubble-schedule-hour">' + s.hour + 'h</span>' +
+          '<span class="bubble-schedule-name">' + s.taskName + '</span>' +
+          (s.isEvent ? '<span class="bubble-event-tag">evt</span>' : '') +
+          '</div>';
+      });
+    }
+
+    // Pending tasks (compact)
+    if (pendingTasks.length > 0) {
+      if (todaySchedule.length > 0) html += '<div class="bubble-today-header" style="margin-top:6px">A faire</div>';
+      const priorityMark = { high: '! ', medium: '- ', low: '  ' };
+      pendingTasks.slice(0, 5).forEach((t, i) => {
+        const realIdx = tasks.indexOf(t);
+        const mark = t.priority ? priorityMark[t.priority] : '';
+        const taskLabel = t.task.startsWith('  ') ? t.task.trim() : t.task;
+        html += '<div class="bubble-task-item" data-index="' + realIdx + '">' +
+          '<span class="bubble-check">' + (t.done ? 'x' : '.') + '</span>' +
+          '<span class="bubble-task-text">' + mark + t.task.trim() + '</span>' +
+          '<span class="bubble-focus-btn" data-task="' + taskLabel + '" title="Focus">F</span>' +
+          '<span class="bubble-delete" data-index="' + realIdx + '" title="Supprimer">x</span>' +
+          '</div>';
+      });
+      if (pendingTasks.length > 5) {
+        html += '<div class="bubble-more">+' + (pendingTasks.length - 5) + ' autres</div>';
+      }
+    }
+
+    list.innerHTML = html;
     list.querySelectorAll('.bubble-check').forEach(btn =>
       btn.addEventListener('click', () => toggleTask(parseInt(btn.closest('.bubble-task-item').dataset.index))));
     list.querySelectorAll('.bubble-delete').forEach(btn =>
@@ -911,6 +1130,7 @@ function renderBubbleTasks() {
       btn.addEventListener('click', () => { panel.classList.remove('open'); startFocusMode(btn.dataset.task); }));
   });
 }
+
 
 function toggleTask(index) {
   chrome.storage.local.get(['tasks'], (result) => {
@@ -940,9 +1160,13 @@ function showNotification(msg) {
   overlay.classList.add('open');
 }
 
-setInterval(() => { if (panel.classList.contains('open')) renderBubbleTasks(); }, 1000);
+setInterval(() => {
+  if (!isChromeContextValid()) return;
+  if (panel.classList.contains('open')) renderBubbleTasks();
+}, 1000);
 
 setInterval(() => {
+  if (!isChromeContextValid()) return;
   chrome.storage.local.get(['tasks'], (result) => {
     const tasks = result.tasks || [], now = Date.now();
     tasks.forEach(t => {

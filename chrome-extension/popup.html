@@ -18,33 +18,27 @@
       <div class="ob-step-dot" data-step="5"></div>
     </div>
   </div>
-
   <div id="ob-main">
     <div id="ob-meta">
       <span id="ob-step-label">01 / 05</span>
       <div id="ob-progress"><div id="ob-progress-bar"></div></div>
     </div>
-
     <div id="ob-questions">
-
       <div class="ob-question active" data-step="1">
         <p class="ob-q-hint">Commençons par le commencement.</p>
         <h2 class="ob-q-label">Comment tu t'appelles ?</h2>
         <input type="text" class="ob-input" id="ob-name" placeholder="Prénom" autocomplete="off" />
       </div>
-
       <div class="ob-question" data-step="2">
         <p class="ob-q-hint">Pour que Claude comprenne ton contexte.</p>
         <h2 class="ob-q-label">Quel est ton métier ?</h2>
         <input type="text" class="ob-input" id="ob-job" placeholder="Ex : développeur web, chef de projet, designer..." autocomplete="off" />
       </div>
-
       <div class="ob-question" data-step="3">
         <p class="ob-q-hint">Ce sur quoi tu travailles en ce moment.</p>
         <h2 class="ob-q-label">Tes projets actuels ?</h2>
         <textarea class="ob-input ob-textarea" id="ob-projects" placeholder="Décris brièvement tes projets en cours..."></textarea>
       </div>
-
       <div class="ob-question" data-step="4">
         <p class="ob-q-hint">Claude s'adaptera à ta façon de travailler.</p>
         <h2 class="ob-q-label">Comment tu travailles le mieux ?</h2>
@@ -58,15 +52,12 @@
         </div>
         <input type="hidden" id="ob-style-value" />
       </div>
-
       <div class="ob-question" data-step="5">
         <p class="ob-q-hint">Optionnel, mais utile.</p>
         <h2 class="ob-q-label">Un truc à savoir sur toi ?</h2>
-        <textarea class="ob-input ob-textarea" id="ob-extra" placeholder="Ex : je sous-estime souvent mes tâches, j'ai du mal à dire non, je procrastine sur la documentation..."></textarea>
+        <textarea class="ob-input ob-textarea" id="ob-extra" placeholder="Ex : je sous-estime souvent mes tâches..."></textarea>
       </div>
-
     </div>
-
     <div id="ob-nav">
       <button id="ob-back">Retour</button>
       <button id="ob-next">Continuer</button>
@@ -79,32 +70,63 @@
   <div id="app-header">
     <div id="app-brand">TA</div>
     <nav id="nav-tabs">
-      <button class="nav-tab active" data-tab="tasks">Tâches</button>
+      <button class="nav-tab active" data-tab="tasks">Taches</button>
+      <button class="nav-tab" data-tab="planning">Planning</button>
       <button class="nav-tab" data-tab="profile">Profil</button>
       <button class="nav-tab" data-tab="keys">API</button>
     </nav>
   </div>
 
-  <!-- Tab Tâches -->
+  <!-- Tab Taches -->
   <div id="tab-tasks" class="tab-content active">
-    <div class="toggle-area">
-      <span class="toggle-label">Bulle flottante</span>
-      <button id="toggle-bubble-btn" class="toggle-btn">Active</button>
-    </div>
-
     <div id="task-list"></div>
-
     <div class="input-row">
-      <input type="text" id="user-input" placeholder="Ajoute une tâche en langage naturel..." autofocus />
-      <button id="send-btn">→</button>
+      <input type="text" id="user-input" placeholder="Dis-moi ce que tu as... (concours le 18 avril, reunion lundi 10h...)" autofocus />
+      <button id="send-btn">+</button>
     </div>
     <div id="status"></div>
+  </div>
+
+  <!-- Tab Planning -->
+  <div id="tab-planning" class="tab-content">
+    <div id="planning-header">
+      <div id="planning-nav">
+        <button id="plan-prev">←</button>
+        <span id="plan-week-label"></span>
+        <button id="plan-next">→</button>
+      </div>
+      <div id="planning-view-tabs">
+        <button class="view-tab active" data-view="week">Semaine</button>
+        <button class="view-tab" data-view="day">Jour</button>
+        <button class="view-tab" data-view="month">Mois</button>
+      </div>
+    </div>
+
+    <div id="planning-actions-bar">
+    <button id="plan-ai-btn">Planifier avec Claude</button>
+    <button id="import-schedule-btn">Emploi du temps</button>
+  </div>
+  <input type="file" id="schedule-file-input" accept=".pdf,image/*" style="display:none" />
+  <input type="file" id="planning-docs-input" accept=".pdf,image/*" multiple style="display:none" />
+    <div id="plan-ai-status"></div>
+
+    <!-- Revision goals panel -->
+    <div id="revision-goals-panel"></div>
+
+    <div id="planning-body">
+      <div id="planning-sidebar">
+        <div id="sidebar-label">Tâches</div>
+        <div id="unscheduled-tasks"></div>
+      </div>
+      <div id="planning-grid-wrap">
+        <div id="planning-grid"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Tab Profil -->
   <div id="tab-profile" class="tab-content">
     <div id="profile-greeting"></div>
-
     <div class="profile-field">
       <label>Prénom</label>
       <input type="text" id="p-name" placeholder="—" />
@@ -125,15 +147,24 @@
       <label>À savoir</label>
       <textarea id="p-extra" placeholder="—"></textarea>
     </div>
-
     <div class="profile-actions">
       <button id="save-profile-btn">Enregistrer</button>
       <span id="profile-status"></span>
+    </div>
+
+    <div id="memory-section">
+      <div id="memory-label">Mémoire de Claude</div>
+      <div id="memory-list"></div>
+      <div id="memory-empty">Aucun souvenir pour l'instant.</div>
     </div>
   </div>
 
   <!-- Tab API -->
   <div id="tab-keys" class="tab-content">
+    <div class="toggle-area">
+      <span class="toggle-label">Bulle flottante</span>
+      <button id="toggle-bubble-btn" class="toggle-btn">Active</button>
+    </div>
     <div class="key-block">
       <div class="key-label">Anthropic — Claude</div>
       <div class="key-row">
@@ -154,5 +185,16 @@
 </div>
 
 <script src="popup.js"></script>
+<div id="memory-modal" style="display:none">
+  <div id="memory-modal-inner">
+    <div id="memory-modal-title">Retenir quelque chose ?</div>
+    <div id="memory-modal-suggestion"></div>
+    <textarea id="memory-modal-input" placeholder="Ce que tu veux que je retienne..."></textarea>
+    <div id="memory-modal-btns">
+      <button id="memory-modal-skip">Passer</button>
+      <button id="memory-modal-save">Retenir</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

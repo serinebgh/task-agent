@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check popup.js)",
+      "Bash(node --check content.js)",
+      "Bash(node --check \"c:/Users/serin/task-agent/chrome-extension/popup.js\")",
+      "Bash(node.exe --check \"c:/Users/serin/task-agent/chrome-extension/popup.js\")"
+    ]
+  }
+}
