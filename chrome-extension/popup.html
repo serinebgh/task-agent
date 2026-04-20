@@ -72,6 +72,7 @@
     <nav id="nav-tabs">
       <button class="nav-tab active" data-tab="tasks">Taches</button>
       <button class="nav-tab" data-tab="planning">Planning</button>
+      <button class="nav-tab" data-tab="stats">Stats</button>
       <button class="nav-tab" data-tab="profile">Profil</button>
       <button class="nav-tab" data-tab="keys">API</button>
     </nav>
@@ -109,8 +110,6 @@
   <input type="file" id="schedule-file-input" accept=".pdf,image/*" style="display:none" />
   <input type="file" id="planning-docs-input" accept=".pdf,image/*" multiple style="display:none" />
     <div id="plan-ai-status"></div>
-
-    <!-- Revision goals panel -->
     <div id="revision-goals-panel"></div>
 
     <div id="planning-body">
@@ -122,6 +121,12 @@
         <div id="planning-grid"></div>
       </div>
     </div>
+  </div>
+
+
+  <!-- Tab Stats -->
+  <div id="tab-stats" class="tab-content">
+    <div id="stats-loading" style="color:#3d3d5c;font-size:12px;padding:20px 0;text-align:center">Chargement...</div>
   </div>
 
   <!-- Tab Profil -->

@@ -94,7 +94,6 @@ function finishOnboarding() {
     loadProfileIntoForm(profile);
     showApp();
     loadTasks(renderTasks);
-    initPlanning();
   });
 }
 
@@ -140,6 +139,9 @@ document.querySelectorAll('.nav-tab').forEach(tab => {
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab === 'stats') renderStatsTab();
+    if (tab.dataset.tab === 'planning') renderRevisionGoalsPanel();
+    if (tab.dataset.tab === 'profile') renderMemoryList();
   });
 });
 
@@ -265,40 +267,6 @@ function markDone(index) {
 
 
 
-
-// ── Memory helpers ────────────────────────────────────────────────────────────
-function getMemory() {
-  return new Promise(r => chrome.storage.local.get(['claudeMemory'], d => r(d.claudeMemory || [])));
-}
-function saveMemory(m) { return new Promise(r => chrome.storage.local.set({ claudeMemory: m }, r)); }
-async function addMemory(text) {
-  const memories = await getMemory();
-  memories.push({ text: text.trim(), date: new Date().toLocaleDateString('fr-FR', { day:'numeric', month:'short', year:'numeric' }), timestamp: Date.now() });
-  await saveMemory(memories);
-  renderMemoryList();
-}
-async function deleteMemory(index) {
-  const memories = await getMemory(); memories.splice(index, 1);
-  await saveMemory(memories); renderMemoryList();
-}
-async function renderMemoryList() {
-  const memories = await getMemory();
-  const list = document.getElementById('memory-list');
-  const empty = document.getElementById('memory-empty');
-  if (!list) return;
-  if (!memories.length) { list.innerHTML = ''; if (empty) empty.style.display = 'block'; return; }
-  if (empty) empty.style.display = 'none';
-  list.innerHTML = memories.map((m, i) =>
-    '<div class="memory-item"><div class="memory-text">' + m.text + '</div><div class="memory-meta"><span class="memory-date">' + m.date + '</span><span class="memory-delete" data-index="' + i + '">x</span></div></div>'
-  ).join('');
-  list.querySelectorAll('.memory-delete').forEach(btn => btn.addEventListener('click', () => deleteMemory(parseInt(btn.dataset.index))));
-}
-async function getMemoryContext() {
-  const memories = await getMemory();
-  if (!memories.length) return '';
-  return ' Memoire: ' + memories.slice(-5).map(m => m.text).join('; ') + '.';
-}
-
 async function askToSaveMemory(userInput) {
   const apiKey = await getStoredKey();
   if (!apiKey) return;
@@ -415,7 +383,10 @@ chrome.storage.local.get(['onboardingDone', 'userProfile', 'apiKey', 'openaiKey'
 
 // ── PLANNING ──────────────────────────────────────────────────────────────────
 const HOURS_START = 7;
-const HOURS_END = 22;
+const HOURS_END = 24;
+// Work hours for scheduling: 19h-01h
+const WORK_HOURS_START = 19;
+const WORK_HOURS_END_NEXT = 2; // goes to 02h next day
 const DAYS = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
 let planState = { view:'week', currentDate:new Date(), schedule:{} };
 
@@ -442,7 +413,7 @@ function renderPlanning() {
 function makeCellTask(key) {
   const s = planState.schedule[key]; if (!s) return null;
   const div = document.createElement('div');
-  div.className = 'cell-task' + (s.isEvent?' is-event':s.isBlocked?' is-blocked':s.isRevision?' is-revision':'');
+  div.className = 'cell-task' + (s.isEvent?' is-event':s.isBlocked?' is-blocked':'');
   div.draggable = !s.isBlocked && !s.isEvent; div.dataset.key = key;
   const ns = document.createElement('span'); ns.className='cell-task-name'; ns.textContent=s.taskName; div.appendChild(ns);
   if (!s.isBlocked) {
@@ -488,7 +459,7 @@ function renderWeekView() {
       const key = formatDate(date)+'_'+String(h).padStart(2,'0');
       const s = planState.schedule[key];
       const cell = document.createElement('div');
-      cell.className = 'grid-cell'+(s?(s.isBlocked?' is-blocked-cell':s.isEvent?' is-event-cell':s.isRevision?' is-revision-cell has-task':' has-task'):'');
+      cell.className = 'grid-cell'+(s?(s.isBlocked?' is-blocked-cell':s.isEvent?' is-event-cell':' has-task'):'');
       cell.dataset.key = key;
       if (s) { const te = makeCellTask(key); if (te) cell.appendChild(te); }
       if (!s || !s.isBlocked) makeDroppable(cell, key);
@@ -508,7 +479,7 @@ function renderDayView() {
     const tc = document.createElement('div'); tc.className='grid-time-col'; tc.textContent=h+'h';
     const s = planState.schedule[key];
     const cell = document.createElement('div');
-    cell.className='grid-cell grid-cell-day'+(s?(s.isBlocked?' is-blocked-cell':s.isEvent?' is-event-cell':s.isRevision?' is-revision-cell has-task':' has-task'):'');
+    cell.className='grid-cell grid-cell-day'+(s?(s.isBlocked?' is-blocked-cell':s.isEvent?' is-event-cell':' has-task'):'');
     cell.dataset.key=key;
     if (s) { const te=makeCellTask(key); if (te) cell.appendChild(te); }
     if (!s || !s.isBlocked) makeDroppable(cell, key);
@@ -597,34 +568,7 @@ async function planWithClaude() {
 }
 
 // Import emploi du temps
-document.getElementById('import-schedule-btn') && document.getElementById('import-schedule-btn').addEventListener('click', () => { document.getElementById('schedule-file-input').click(); });
-document.getElementById('schedule-file-input') && document.getElementById('schedule-file-input').addEventListener('change', async e => {
-  const file=e.target.files[0]; if (!file) return;
-  const st=document.getElementById('plan-ai-status'); st.textContent='Lecture emploi du temps...';
-  const apiKey=await getStoredKey(); if (!apiKey) { st.textContent='Cle manquante.'; return; }
-  const reader=new FileReader();
-  reader.onload=async()=>{
-    const b64=reader.result.split(',')[1]; const isPDF=file.type==='application/pdf'; const isImg=file.type.startsWith('image/');
-    if (!isPDF&&!isImg) { st.textContent='Format non supporte.'; return; }
-    const cb=isPDF?{type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}}:{type:'image',source:{type:'base64',media_type:file.type,data:b64}};
-    const ws=getWeekStart(planState.currentDate);
-    const wd=DAYS.map((d,i)=>{const date=new Date(ws);date.setDate(date.getDate()+i);return{label:d,date:formatDate(date)};});
-    const SYS='Tu analyses un emploi du temps. JSON uniquement. Format:{"slots":[{"day":"Lundi","hour_start":8,"hour_end":13,"label":"Cours maths"}]} Regles: hour_start=heure de debut ARRONDIE AU BAS (ex: 8h45->8), hour_end=heure de fin ARRONDIE AU HAUT (ex: 12h45->13). Jours: Lundi Mardi Mercredi Jeudi Vendredi Samedi Dimanche. Extrait TOUS les creneaux y compris le matin.';
-    try {
-      const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:1500,system:SYS,messages:[{role:'user',content:[cb,{type:'text',text:'Extrait tous les creneaux.'}]}]})});
-      const data=await r.json(); if (!data.content||!data.content[0]) throw new Error('vide');
-      let raw=data.content[0].text.trim(); if (raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
-      const parsed=JSON.parse(raw);
-      const dm={'Lundi':0,'Mardi':1,'Mercredi':2,'Jeudi':3,'Vendredi':4,'Samedi':5,'Dimanche':6};
-      let blocked=0;
-      parsed.slots.forEach(slot=>{const di=dm[slot.day];if(di===undefined)return;const d=wd[di];if(!d)return;for(let h=slot.hour_start;h<slot.hour_end;h++){const key=d.date+'_'+String(h).padStart(2,'0');if(!planState.schedule[key]){planState.schedule[key]={taskName:slot.label,isBlocked:true};blocked++;}}});
-      saveSchedule(); renderPlanning();
-      st.textContent=blocked+' creneau'+(blocked>1?'x':'')+' bloque'+(blocked>1?'s':'')+'.';
-      setTimeout(()=>{st.textContent='';},4000);
-    } catch(err) { st.textContent='Erreur:'+err.message; }
-  };
-  reader.readAsDataURL(file); e.target.value='';
-});
+
 
 // Upload docs preparation
 document.getElementById('planning-docs-input') && document.getElementById('planning-docs-input').addEventListener('change', async e => {
@@ -676,329 +620,559 @@ function showAskDocsModal(eventName) {
   inner.appendChild(btns); modal.appendChild(inner); document.body.appendChild(modal);
 }
 
-// ── SMART PLANNING ENGINE ────────────────────────────────────────────────────
-
-function getTodayISO() {
-  // Use local date, NOT UTC (toISOString uses UTC which can shift the day)
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return y + '-' + m + '-' + day;
-}
-
-function getRevisionGoals() {
-  return new Promise(r => chrome.storage.local.get(['revisionGoals'], d => r(d.revisionGoals || [])));
-}
-function saveRevisionGoals(goals) { chrome.storage.local.set({ revisionGoals: goals }); }
-
-// Wipe ALL revision sessions, keep blocked (cours) and events
-function clearRevisionSessions(schedule) {
-  const cleaned = {};
-  Object.entries(schedule).forEach(([k, v]) => {
-    if (!v.isRevision) cleaned[k] = v;
-  });
-  return cleaned;
-}
-
-// Get free slots FROM TODAY for N weeks, skipping blocked/event slots
-function getFreeSlots(schedule, weeks) {
-  const slots = [];
-  const start = new Date(); start.setHours(0, 0, 0, 0);
-  const end = new Date(start); end.setDate(end.getDate() + weeks * 7);
-  const cur = new Date(start);
-  while (cur < end) {
-    // Always use local date parts to avoid UTC shift
-    const ds = cur.getFullYear() + '-'
-      + String(cur.getMonth() + 1).padStart(2, '0') + '-'
-      + String(cur.getDate()).padStart(2, '0');
-    for (let h = HOURS_START; h < HOURS_END; h++) {
-      const key = ds + '_' + String(h).padStart(2, '0');
-      if (!schedule[key]) slots.push({ date: ds, hour: h, key });
-    }
-    cur.setDate(cur.getDate() + 1);
-  }
-  return slots;
-}
-
-// ── MAIN SMART AGENT ─────────────────────────────────────────────────────────
+// Smart runAgent with calendar detection
+const _origAgent = runAgent;
 async function runAgent(userInput) {
-  const apiKey = await getStoredKey();
-  if (!apiKey) { setStatus('Cle Anthropic manquante.'); return; }
+  const apiKey=await getStoredKey(); if (!apiKey) { setStatus('Cle manquante.'); return; }
   setStatus('...');
-
-  const profile = await getProfile();
-  const memCtx = await getMemoryContext();
-  const revisionGoals = await getRevisionGoals();
-
-  let pCtx = '';
-  if (profile && profile.name) {
-    pCtx = 'Utilisateur: ' + profile.name
-      + (profile.job ? ', ' + profile.job : '')
-      + (profile.workStyle ? ', style: ' + profile.workStyle : '') + '.';
-    if (profile.projects) pCtx += ' Projets: ' + profile.projects + '.';
-  }
-  if (memCtx) pCtx += memCtx;
-
-  const todayISO = getTodayISO();
-  console.log('[SmartReplan] Today:', todayISO, '| Goals:', revisionGoals.length);
-  const todayLabel = new Date().toLocaleDateString('fr-FR', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
-
-  // Current schedule summary
-  const schedule = planState.schedule;
-  const blockedStr = Object.entries(schedule)
-    .filter(([k,v]) => v.isBlocked)
-    .slice(0, 40)
-    .map(([k,v]) => k + '(' + v.taskName + ')').join(', ');
-  const eventsStr = Object.entries(schedule)
-    .filter(([k,v]) => v.isEvent)
-    .slice(0, 20)
-    .map(([k,v]) => k + '(' + v.taskName + ')').join(', ');
-  const goalsStr = revisionGoals.length
-    ? revisionGoals.map(g => g.subject + ':' + g.hoursPerWeek + 'h/sem' + (g.deadline ? ' deadline:' + g.deadline : '')).join(', ')
-    : 'aucun';
-
-  const SYS = pCtx
-    + ' AUJOURD HUI: ' + todayISO + ' (' + todayLabel + ').'
-    + ' NE JAMAIS planifier avant ' + todayISO + '.'
-    + ' Cours bloques: ' + (blockedStr || 'aucun') + '.'
-    + ' Evenements: ' + (eventsStr || 'aucun') + '.'
-    + ' Objectifs revision actuels: ' + goalsStr + '.'
-    + ' Tu es un assistant planning intelligent. Reponds UNIQUEMENT JSON valide.'
-    + ' Format: {"action":"add_task|add_event|add_both|set_revision_goals|replan|list|unknown",'
-    + '"task":"nom",'
-    + '"event":{"name":"...","date":"YYYY-MM-DD","hour":9,"duration_hours":1},'
-    + '"revision_goals":[{"subject":"maths","hours_per_week":3,"priority":"high|medium|low","deadline":"YYYY-MM-DD ou null"}],'
-    + '"ask_docs":false,'
-    + '"replan_after":false,'
-    + '"reply":"phrase naturelle"}'
-    + ' Regles: si date/echeance -> add_event; tache+date -> add_both; si parle de revisions/matieres/concours -> set_revision_goals ET replan_after=true ET ask_docs=true; reply=phrase naturelle.';
-
+  const profile=await getProfile(); const memCtx=await getMemoryContext();
+  let pCtx='';
+  if (profile&&profile.name) { pCtx='Assistant de '+profile.name+(profile.job?','+profile.job:'')+(profile.workStyle?' style:'+profile.workStyle:'')+(profile.projects?' projets:'+profile.projects:'')+'.'; }
+  if (memCtx) pCtx+=memCtx;
+  const today=new Date().toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const SYS=pCtx+' Aujourd hui:'+today+'. Tu es assistant gestion taches et planning. Reponds JSON uniquement. Format:{"action":"add_task|add_event|add_both|list|done|unknown","task":"nom","event":{"name":"...","date":"YYYY-MM-DD","hour":9,"duration_hours":1},"schedule_tasks":false,"reply":"reponse courte","ask_docs":false} Regles: date/echeance->add_event, tache+date->add_both, ask_docs=true si examen/concours/projet, reply phrase naturelle.';
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', max_tokens: 500, system: SYS, messages: [{ role: 'user', content: userInput }] })
-    });
-    const data = await resp.json();
-    if (!data.content || !data.content[0]) { setStatus('Erreur'); return; }
-    let raw = data.content[0].text.trim();
-    if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/, '').trim();
-    const cmd = JSON.parse(raw);
-
-    // Add event to calendar
-    if ((cmd.action === 'add_event' || cmd.action === 'add_both') && cmd.event) {
-      const ev = cmd.event;
-      if (ev.date && ev.hour !== undefined) {
-        const dur = ev.duration_hours || 1;
-        for (let h = ev.hour; h < ev.hour + dur; h++) {
-          planState.schedule[ev.date + '_' + String(h).padStart(2,'0')] = { taskName: ev.name, isEvent: true };
-        }
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:300,system:SYS,messages:[{role:'user',content:userInput}]})});
+    const data=await r.json(); if (!data.content||!data.content[0]) { setStatus('Erreur'); return; }
+    let raw=data.content[0].text.trim(); if (raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
+    const cmd=JSON.parse(raw);
+    if ((cmd.action==='add_event'||cmd.action==='add_both')&&cmd.event) {
+      const ev=cmd.event;
+      if (ev.date&&ev.hour!==undefined) {
+        const dur=ev.duration_hours||1;
+        for (let h=ev.hour;h<ev.hour+dur;h++) { const key=ev.date+'_'+String(h).padStart(2,'0'); planState.schedule[key]={taskName:ev.name,isEvent:true}; }
         saveSchedule();
-        try { planState.currentDate = new Date(ev.date + 'T12:00:00'); planState.view = 'week'; } catch(e2) {}
-        if (document.getElementById('tab-planning') && document.getElementById('tab-planning').classList.contains('active')) renderPlanning();
+        try { planState.currentDate=new Date(ev.date+'T12:00:00'); planState.view='week'; } catch(e2) {}
+        const pt=document.getElementById('tab-planning'); if (pt&&pt.classList.contains('active')) renderPlanning();
       }
     }
+    if ((cmd.action==='add_task'||cmd.action==='add_both')&&cmd.task) { loadTasks(tasks=>{tasks.push({task:cmd.task,done:false,priority:'medium'});saveTasks(tasks);renderTasks(tasks);}); }
+    if (cmd.action==='list') { loadTasks(tasks=>{setStatus(tasks.length+' tache'+(tasks.length>1?'s':''));renderTasks(tasks);}); }
+    if (cmd.reply&&cmd.action!=='list') setStatus(cmd.reply);
+    if (cmd.ask_docs) setTimeout(()=>showAskDocsModal(cmd.event?cmd.event.name:cmd.task),1500);
+    if (cmd.schedule_tasks) setTimeout(()=>{const pt=document.getElementById('tab-planning');if(pt&&pt.classList.contains('active'))planWithClaude();},2000);
+    if (userInput.length>20) askToSaveMemory(userInput);
+  } catch(err) { setStatus('Erreur:'+err.message); }
+}
 
-    // Add task
-    if ((cmd.action === 'add_task' || cmd.action === 'add_both') && cmd.task) {
-      loadTasks(tasks => { tasks.push({ task: cmd.task, done: false, priority: 'medium' }); saveTasks(tasks); renderTasks(tasks); });
-    }
 
-    // Set revision goals → always triggers full replan
-    if (cmd.action === 'set_revision_goals' && cmd.revision_goals && cmd.revision_goals.length) {
-      const incoming = cmd.revision_goals.map(g => ({
-        subject: g.subject,
-        hoursPerWeek: g.hours_per_week || 2,
-        priority: g.priority || 'medium',
-        deadline: g.deadline || null,
-        addedAt: Date.now()
-      }));
-      const existing = await getRevisionGoals();
-      const merged = [...existing];
-      incoming.forEach(g => {
-        const idx = merged.findIndex(e => e.subject.toLowerCase() === g.subject.toLowerCase());
-        if (idx >= 0) merged[idx] = g; else merged.push(g);
-      });
-      saveRevisionGoals(merged);
-      renderRevisionGoalsPanel();
-      if (cmd.reply) setStatus(cmd.reply);
-      setTimeout(() => smartReplan(), 800);
-      if (cmd.ask_docs) setTimeout(() => showAskDocsModal(incoming.map(g => g.subject).join(', ')), 2500);
-      if (userInput.length > 20) askToSaveMemory(userInput);
-      return;
-    }
 
-    if (cmd.action === 'list') {
-      loadTasks(tasks => { setStatus(tasks.length + ' tache' + (tasks.length > 1 ? 's' : '')); renderTasks(tasks); });
-    }
-
-    if (cmd.reply && cmd.action !== 'list') setStatus(cmd.reply);
-
-    // Ask docs for events too
-    if (cmd.ask_docs) {
-      const evtName = cmd.event ? cmd.event.name : cmd.task;
-      setTimeout(() => showAskDocsModal(evtName), 1500);
-    }
-
-    // Replan if new event added (to avoid scheduling revisions during the event)
-    if (cmd.replan_after || cmd.action === 'replan') {
-      setTimeout(() => smartReplan(), 1000);
-    }
-
-    if (userInput.length > 20) askToSaveMemory(userInput);
-
-  } catch(err) { setStatus('Erreur: ' + err.message); }
+// ── SMART PLANNING ENGINE ─────────────────────────────────────────────────────
+function getTodayISO() {
+  const d = new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function getRevisionGoals() { return new Promise(r => chrome.storage.local.get(['revisionGoals'], d => r(d.revisionGoals || []))); }
+function saveRevisionGoals(goals) { chrome.storage.local.set({ revisionGoals: goals }); }
+function clearRevisionSessions(schedule) {
+  const c = {}; Object.entries(schedule).forEach(([k,v]) => { if (!v.isRevision) c[k]=v; }); return c;
+}
+function getFreeSlots(schedule, weeks) {
+  // Work hours: 19h-02h (next day). Split into evening same day + early morning next day.
+  const WORK_HOURS = [19,20,21,22,23,0,1]; // 19h to 01h
+  const slots = []; const start = new Date(); start.setHours(0,0,0,0);
+  const end = new Date(start); end.setDate(end.getDate()+weeks*7); const cur = new Date(start);
+  while (cur < end) {
+    const ds = cur.getFullYear()+'-'+String(cur.getMonth()+1).padStart(2,'0')+'-'+String(cur.getDate()).padStart(2,'0');
+    WORK_HOURS.forEach(h => {
+      // Hours 0,1 belong to the NEXT calendar day
+      let slotDate = ds;
+      if (h <= 1) {
+        const nextDay = new Date(cur); nextDay.setDate(cur.getDate()+1);
+        slotDate = nextDay.getFullYear()+'-'+String(nextDay.getMonth()+1).padStart(2,'0')+'-'+String(nextDay.getDate()).padStart(2,'0');
+      }
+      const key = slotDate+'_'+String(h).padStart(2,'0');
+      if (!schedule[key]) slots.push({date:slotDate,hour:h,key});
+    });
+    cur.setDate(cur.getDate()+1);
+  }
+  // Deduplicate
+  const seen = new Set();
+  return slots.filter(s => { const k=s.key; if(seen.has(k))return false; seen.add(k); return true; });
 }
 
 // ── SMART REPLAN ──────────────────────────────────────────────────────────────
-// Called after: goals change, EDT import, event added, docs uploaded
 async function smartReplan() {
   const st = document.getElementById('plan-ai-status');
-  if (st) st.textContent = 'Claude replanie les revisions...';
-
-  const apiKey = await getStoredKey();
-  if (!apiKey) { if (st) st.textContent = 'Cle manquante.'; return; }
-
+  if (st) st.textContent = 'Claude replanie...';
+  const apiKey = await getStoredKey(); if (!apiKey) { if(st) st.textContent='Cle manquante.'; return; }
   const revisionGoals = await getRevisionGoals();
-  if (!revisionGoals.length) {
-    planWithClaude(); return;
-  }
-
-  // 1. Wipe old revision sessions
+  if (!revisionGoals.length) { planWithClaude(); return; }
   let schedule = clearRevisionSessions(planState.schedule);
-
-  // 2. Get free slots from TODAY
   const todayISO = getTodayISO();
-  const freeSlots = getFreeSlots(schedule, 4); // 4 weeks
-  // Only keep slots from today onwards
-  const futureFree = freeSlots.filter(s => s.date >= todayISO);
-
-  // 3. Build blocked/event summary
-  const blockedList = Object.entries(schedule)
-    .filter(([k, v]) => (v.isBlocked || v.isEvent) && k.split('_')[0] >= todayISO)
-    .map(([k, v]) => k + '(' + v.taskName + ')').join(', ');
-
-  const eventsList = Object.entries(schedule)
-    .filter(([k, v]) => v.isEvent && k.split('_')[0] >= todayISO)
-    .map(([k, v]) => ({ date: k.split('_')[0], hour: parseInt(k.split('_')[1]), name: v.taskName }));
-
-  // Deadlines from events (for context)
-  const deadlineContext = eventsList
-    .map(e => e.date + ': ' + e.name).join(', ');
-
-  // 4. Goals string
-  const goalsStr = revisionGoals.map(g =>
-    g.subject + ' ' + g.hoursPerWeek + 'h/semaine priorite:' + g.priority
-    + (g.deadline ? ' deadline:' + g.deadline : '')
-  ).join('; ');
-
-  // 5. Free slots string (compact)
-  const freeSlotsStr = futureFree.slice(0, 120).map(s => s.date + ' ' + s.hour + 'h').join(', ');
-
-  const SYS = 'Tu es un planificateur de revisions intelligent.'
-    + ' Reponds UNIQUEMENT JSON valide.'
-    + ' Format: {"sessions":[{"subject":"maths","date":"YYYY-MM-DD","hour":9,"duration":1,"label":"Rev. maths - algebre"}],"reply":"..."}'
-    + ' Regles ABSOLUES:'
-    + ' 1. Ne jamais placer de session avant ' + todayISO
-    + ' 2. Ne jamais placer sur un creneau bloque ou event'
-    + ' 3. Respecter exactement les heures/semaine demandees'
-    + ' 4. Sessions de 1-2h max, bien reparties dans la semaine'
-    + ' 5. Prioriser les matieres avec deadline proche'
-    + ' 6. Equilibrer: pas plus de 4h de revision par jour'
-    + ' 7. Utiliser UNIQUEMENT les creneaux libres fournis';
-
-  const userMsg = 'Aujourd hui: ' + todayISO + '.'
-    + ' Objectifs: ' + goalsStr + '.'
-    + ' Echeances/concours: ' + (deadlineContext || 'aucun') + '.'
-    + ' Cours et events (INTERDIT de planifier dessus): ' + (blockedList || 'aucun') + '.'
-    + ' Creneaux libres disponibles: ' + (freeSlotsStr || 'aucun') + '.'
-    + ' Place les sessions de revision sur les 4 prochaines semaines.';
-
+  const futureFree = getFreeSlots(schedule,4).filter(s => s.date >= todayISO);
+  const blockedList = Object.entries(schedule).filter(([k,v])=>(v.isBlocked||v.isEvent)&&k.split('_')[0]>=todayISO).map(([k,v])=>k+'('+v.taskName+')').join(', ');
+  const deadlineCtx = Object.entries(schedule).filter(([k,v])=>v.isEvent&&k.split('_')[0]>=todayISO).map(([k,v])=>k.split('_')[0]+': '+v.taskName).join(', ');
+  const goalsStr = revisionGoals.map(g=>g.subject+' '+g.hoursPerWeek+'h/semaine priorite:'+g.priority+(g.deadline?' deadline:'+g.deadline:'')).join('; ');
+  const freeSlotsStr = futureFree.slice(0,120).map(s=>s.date+' '+s.hour+'h').join(', ');
+  const SYS = 'Tu es planificateur revisions. JSON uniquement. Format:{"sessions":[{"subject":"maths","date":"YYYY-MM-DD","hour":19,"duration":1,"label":"Rev. maths - algebre"}],"reply":"..."} REGLES ABSOLUES: 1.jamais avant '+todayISO+' 2.jamais sur bloque/event 3.heures de travail: 19h-01h UNIQUEMENT (pas avant 19h) 4.sessions 1-2h max 5.max 4h/nuit 6.utiliser UNIQUEMENT creneaux libres fournis';
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-opus-4-6', max_tokens: 2000, system: SYS, messages: [{ role: 'user', content: userMsg }] })
-    });
-    const data = await resp.json();
-    if (!data.content || !data.content[0]) throw new Error('Reponse vide');
-    let raw = data.content[0].text.trim();
-    if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/, '').trim();
-    const parsed = JSON.parse(raw);
-
-    let placed = 0;
+    const resp = await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:2000,system:SYS,messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Objectifs: '+goalsStr+'. Echeances: '+(deadlineCtx||'aucun')+'. Cours INTERDIT: '+(blockedList||'aucun')+'. Creneaux libres: '+(freeSlotsStr||'aucun')+'.'}]})});
+    const data = await resp.json(); if (!data.content||!data.content[0]) throw new Error('vide');
+    let raw = data.content[0].text.trim(); if (raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
+    const parsed = JSON.parse(raw); let placed = 0;
     parsed.sessions.forEach(s => {
-      // Safety check: never place before today
-      if (s.date < todayISO) return;
-      const dur = s.duration || 1;
-      for (let h = s.hour; h < s.hour + dur; h++) {
-        const key = s.date + '_' + String(h).padStart(2,'0');
-        // Never overwrite blocked/event slots
-        if (!schedule[key]) {
-          schedule[key] = { taskName: s.label || ('Rev. ' + s.subject), isRevision: true, subject: s.subject };
-          placed++;
-        }
+      if (s.date < todayISO) return; const dur=s.duration||1;
+      for (let h=s.hour; h<s.hour+dur; h++) {
+        const key=s.date+'_'+String(h).padStart(2,'0');
+        if (!schedule[key]) { schedule[key]={taskName:s.label||('Rev. '+s.subject),isRevision:true,subject:s.subject}; placed++; }
       }
     });
-
-    planState.schedule = schedule;
-    saveSchedule();
-    renderPlanning();
-    renderRevisionGoalsPanel();
-
-    if (st) {
-      st.textContent = placed + ' session' + (placed > 1 ? 's' : '') + ' planifiee' + (placed > 1 ? 's' : '') + '.';
-      if (parsed.reply) st.textContent += ' ' + parsed.reply;
-      setTimeout(() => { if (st) st.textContent = ''; }, 5000);
-    }
-  } catch(err) {
-    if (st) st.textContent = 'Erreur: ' + err.message;
-    console.error('smartReplan error:', err);
-  }
+    planState.schedule=schedule; saveSchedule(); renderPlanning(); renderRevisionGoalsPanel();
+    if (st) { st.textContent=placed+' session'+(placed>1?'s':'')+' planifiee'+(placed>1?'s':'')+'.'; setTimeout(()=>{if(st)st.textContent='';},5000); }
+  } catch(err) { if(st) st.textContent='Erreur: '+err.message; }
 }
 
 async function planWithClaudeOrSmart() {
-  const goals = await getRevisionGoals();
-  if (goals.length > 0) smartReplan(); else planWithClaude();
+  const goals = await getRevisionGoals(); if (goals.length>0) smartReplan(); else planWithClaude();
 }
 
-// ── REVISION GOALS PANEL ──────────────────────────────────────────────────────
 function renderRevisionGoalsPanel() {
   getRevisionGoals().then(goals => {
-    const panel = document.getElementById('revision-goals-panel');
-    if (!panel) return;
-    if (!goals.length) {
-      panel.innerHTML = '<div class="rg-empty">Dis-moi ce que tu veux reviser (ex: "je dois reviser maths 3h/sem et physique 2h/sem pour le 20 juin")</div>';
-      return;
-    }
-    const pm = { high:'!', medium:'-', low:'.' };
-    panel.innerHTML = '<div class="rg-title">Objectifs de revision</div>'
-      + goals.map((g, i) =>
-        '<div class="rg-item">'
-        + '<span class="rg-priority ' + g.priority + '">' + (pm[g.priority]||'-') + '</span>'
-        + '<span class="rg-subject">' + g.subject + '</span>'
-        + '<span class="rg-hours">' + g.hoursPerWeek + 'h/sem</span>'
-        + (g.deadline ? '<span class="rg-deadline">' + new Date(g.deadline + 'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'short'}) + '</span>' : '')
-        + '<span class="rg-delete" data-index="' + i + '">x</span>'
-        + '</div>'
-      ).join('')
-      + '<button id="rg-replan-btn">Replanner maintenant</button>';
-
-    panel.querySelectorAll('.rg-delete').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const goals2 = await getRevisionGoals();
-        goals2.splice(parseInt(btn.dataset.index), 1);
-        saveRevisionGoals(goals2);
-        renderRevisionGoalsPanel();
-        if (goals2.length > 0) setTimeout(() => smartReplan(), 300);
-      });
-    });
-    const rb = panel.querySelector('#rg-replan-btn');
-    if (rb) rb.addEventListener('click', () => smartReplan());
+    const panel = document.getElementById('revision-goals-panel'); if (!panel) return;
+    if (!goals.length) { panel.innerHTML='<div class="rg-empty">Dis-moi ce que tu veux reviser (ex: "maths 3h/sem, physique 2h/sem pour le 20 juin")</div>'; return; }
+    const pm={high:'!',medium:'-',low:'.'};
+    panel.innerHTML='<div class="rg-title">Objectifs de revision</div>'+goals.map((g,i)=>'<div class="rg-item"><span class="rg-priority '+g.priority+'">'+(pm[g.priority]||'-')+'</span><span class="rg-subject">'+g.subject+'</span><span class="rg-hours">'+g.hoursPerWeek+'h/sem</span>'+(g.deadline?'<span class="rg-deadline">'+new Date(g.deadline+'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'short'})+'</span>':'')+'<span class="rg-delete" data-index="'+i+'">x</span></div>').join('')+'<button id="rg-replan-btn">Replanner maintenant</button>';
+    panel.querySelectorAll('.rg-delete').forEach(btn=>{ btn.addEventListener('click',async()=>{ const g2=await getRevisionGoals(); g2.splice(parseInt(btn.dataset.index),1); saveRevisionGoals(g2); renderRevisionGoalsPanel(); if(g2.length>0) setTimeout(()=>smartReplan(),300); }); });
+    const rb=panel.querySelector('#rg-replan-btn'); if(rb) rb.addEventListener('click',()=>smartReplan());
   });
 }
 
+// ── EDT IMPORT RECURRING 12 SEMAINES ─────────────────────────────────────────
+document.getElementById('import-schedule-btn') && document.getElementById('import-schedule-btn').addEventListener('click', () => { document.getElementById('schedule-file-input').click(); });
+document.getElementById('schedule-file-input') && document.getElementById('schedule-file-input').addEventListener('change', async e => {
+  const file=e.target.files[0]; if(!file) return;
+  const st=document.getElementById('plan-ai-status'); st.textContent='Lecture emploi du temps...';
+  const apiKey=await getStoredKey(); if(!apiKey){st.textContent='Cle manquante.';return;}
+  const reader=new FileReader();
+  reader.onload=async()=>{
+    const b64=reader.result.split(',')[1]; const isPDF=file.type==='application/pdf'; const isImg=file.type.startsWith('image/');
+    if(!isPDF&&!isImg){st.textContent='Format non supporte.';return;}
+    const cb=isPDF?{type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}}:{type:'image',source:{type:'base64',media_type:file.type,data:b64}};
+    const SYS='Tu analyses un emploi du temps HEBDOMADAIRE RECURRENT. JSON uniquement. Format:{"slots":[{"day":"Lundi","hour_start":8,"hour_end":13,"label":"Cours maths"}]} Regles: hour_start=heure debut ARRONDIE AU BAS (8h45->8), hour_end=heure fin ARRONDIE AU HAUT (12h45->13). Jours: Lundi Mardi Mercredi Jeudi Vendredi Samedi Dimanche. Extrait ABSOLUMENT TOUS les creneaux y compris le matin.';
+    try {
+      const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:2000,system:SYS,messages:[{role:'user',content:[cb,{type:'text',text:'Extrait tous les creneaux. Inclus les cours du matin.'}]}]})});
+      const data=await r.json(); if(!data.content||!data.content[0]) throw new Error('vide');
+      let raw=data.content[0].text.trim(); if(raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
+      const parsed=JSON.parse(raw);
+      const dm={'Lundi':0,'Mardi':1,'Mercredi':2,'Jeudi':3,'Vendredi':4,'Samedi':5,'Dimanche':6};
+      const WEEKS_AHEAD=12; let blocked=0;
+      const todayBase=new Date(); todayBase.setHours(0,0,0,0);
+      const dow=todayBase.getDay(); const mondayOff=dow===0?-6:1-dow;
+      for(let w=0;w<WEEKS_AHEAD;w++){
+        const wMon=new Date(todayBase); wMon.setDate(todayBase.getDate()+mondayOff+w*7);
+        parsed.slots.forEach(function(slot){
+          const di=dm[slot.day]; if(di===undefined)return;
+          const sd=new Date(wMon); sd.setDate(wMon.getDate()+di);
+          const ds=sd.getFullYear()+'-'+String(sd.getMonth()+1).padStart(2,'0')+'-'+String(sd.getDate()).padStart(2,'0');
+          for(let h=slot.hour_start;h<slot.hour_end;h++){
+            const key=ds+'_'+String(h).padStart(2,'0');
+            if(!planState.schedule[key]){planState.schedule[key]={taskName:slot.label,isBlocked:true};blocked++;}
+          }
+        });
+      }
+      saveSchedule(); renderPlanning();
+      st.textContent=blocked+' creneaux bloques (12 semaines).';
+      setTimeout(function(){st.textContent='';smartReplan();},1500);
+    } catch(err){st.textContent='Erreur: '+err.message;}
+  };
+  reader.readAsDataURL(file); e.target.value='';
+});
 
+// ── IMPORT ORGANISER → PLANNING AVEC DEMANDE HEURES/JOUR ─────────────────────
+// Remplace l'import basique qui met tout en "à faire"
+function showHoursPerDayModal(tasksToSchedule) {
+  const ex = document.getElementById('hours-modal'); if (ex) ex.remove();
+  const modal = document.createElement('div'); modal.id = 'hours-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;';
+  const inner = document.createElement('div');
+  inner.style.cssText = 'background:#111118;border:1px solid #2a2a3e;border-top:2px solid #7c6fcd;border-radius:8px;padding:24px;width:320px;';
+  inner.innerHTML = '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:#5a5a7a;font-weight:600;margin-bottom:12px;">Planifier dans le calendrier</div>'
+    + '<div style="font-size:13px;color:#c0c0d8;margin-bottom:16px;line-height:1.5;">Combien d\'heures veux-tu travailler par jour sur ces taches ?</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">'
+    + ['1h','2h','3h','4h'].map(h => '<button class="hours-btn" data-hours="'+h.replace('h','')+'" style="flex:1;padding:8px;background:#16161f;border:1px solid #2a2a3e;border-radius:4px;color:#7070a0;font-size:12px;cursor:pointer;font-family:Inter,sans-serif;transition:all 0.15s;">'+h+'</button>').join('')
+    + '</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;">'
+    + '<button id="hours-skip" style="padding:7px 16px;background:transparent;border:1px solid #2a2a3e;border-radius:4px;color:#5a5a7a;font-size:12px;cursor:pointer;">Juste ajouter aux taches</button>'
+    + '</div>';
+  modal.appendChild(inner); document.body.appendChild(modal);
+
+  inner.querySelectorAll('.hours-btn').forEach(btn => {
+    btn.addEventListener('mouseover', () => { btn.style.borderColor='#7c6fcd'; btn.style.color='#9088c8'; });
+    btn.addEventListener('mouseout', () => { btn.style.borderColor='#2a2a3e'; btn.style.color='#7070a0'; });
+    btn.addEventListener('click', () => {
+      modal.remove();
+      scheduleTasksInCalendar(tasksToSchedule, parseInt(btn.dataset.hours));
+    });
+  });
+  document.getElementById('hours-skip').addEventListener('click', () => {
+    modal.remove();
+    addTasksToListOnly(tasksToSchedule);
+  });
+}
+
+async function scheduleTasksInCalendar(groups, hoursPerDay) {
+  const st = document.getElementById('plan-ai-status');
+  if (st) st.textContent = 'Claude planifie dans le calendrier...';
+
+  // Switch to planning tab
+  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
+  const pt=document.querySelector('[data-tab="planning"]'); if(pt) pt.classList.add('active');
+  const ptt=document.getElementById('tab-planning'); if(ptt) ptt.classList.add('active');
+
+  const apiKey = await getStoredKey();
+  if (!apiKey) { addTasksToListOnly(groups); return; }
+
+  const todayISO = getTodayISO();
+  const freeSlots = getFreeSlots(planState.schedule, 3).filter(s => s.date >= todayISO);
+  const blockedList = Object.entries(planState.schedule)
+    .filter(([k,v]) => (v.isBlocked||v.isEvent) && k.split('_')[0] >= todayISO)
+    .map(([k,v]) => k+'('+v.taskName+')').join(', ');
+  const freeSlotsStr = freeSlots.slice(0,100).map(s=>s.date+' '+s.hour+'h').join(', ');
+
+  const tasksList = groups.map(g => {
+    const subtasks = (g.subtasks||[]).map(s => typeof s === 'string' ? s : s.name).join(', ');
+    return g.name + (g.estimated_time ? ' ('+g.estimated_time+')' : '') + (subtasks ? ': '+subtasks : '') + ' priorite:'+g.priority;
+  }).join('; ');
+
+  const SYS = 'Tu es planificateur de taches. JSON uniquement.'
+    + ' Format: {"schedule":[{"taskName":"...","date":"YYYY-MM-DD","hour":9,"duration":1,"groupIndex":0}],"reply":"..."}'
+    + ' REGLES: max '+hoursPerDay+'h de travail par nuit, UNIQUEMENT entre 19h et 01h, jamais avant '+todayISO
+    + ', jamais sur creneaux bloques, etaler selon priorite et deadline, pas de tache avant 19h.';
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1500,system:SYS,
+        messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Max '+hoursPerDay+'h/jour. Taches: '+tasksList+'. Cours/events INTERDITS: '+(blockedList||'aucun')+'. Creneaux libres: '+freeSlotsStr+'.'}]})
+    });
+    const data = await resp.json();
+    if (!data.content||!data.content[0]) throw new Error('vide');
+    let raw = data.content[0].text.trim();
+    if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/,'').trim();
+    const parsed = JSON.parse(raw);
+
+    // Add tasks to storage AND place in calendar
+    chrome.storage.local.get(['tasks'], result => {
+      const tasks = result.tasks || [];
+      // Add all tasks to the list
+      groups.forEach((group, gi) => {
+        tasks.push({ task: group.name, done: false, priority: group.priority, estimatedTime: group.estimated_time || null, isGroup: true });
+        (group.subtasks||[]).forEach(sub => {
+          const subName = typeof sub === 'string' ? sub : sub.name;
+          if (subName) tasks.push({ task: '  ' + subName, done: false, priority: group.priority, parentGroup: group.name });
+        });
+      });
+      chrome.storage.local.set({ tasks }, () => {
+        // Place in calendar
+        let placed = 0;
+        parsed.schedule.forEach(item => {
+          if (item.date < todayISO) return;
+          const dur = item.duration || 1;
+          for (let h = item.hour; h < item.hour + dur; h++) {
+            const key = item.date+'_'+String(h).padStart(2,'0');
+            if (!planState.schedule[key]) {
+              planState.schedule[key] = { taskName: item.taskName, isTask: true };
+              placed++;
+            }
+          }
+        });
+        saveSchedule(); renderPlanning();
+        if (st) {
+          st.textContent = placed + ' creneaux planifies.';
+          if (parsed.reply) st.textContent += ' ' + parsed.reply;
+          setTimeout(() => { if(st) st.textContent = ''; }, 4000);
+        }
+      });
+    });
+  } catch(err) {
+    if (st) st.textContent = 'Erreur: '+err.message;
+    addTasksToListOnly(groups);
+  }
+}
+
+function addTasksToListOnly(groups) {
+  chrome.storage.local.get(['tasks'], result => {
+    const tasks = result.tasks || [];
+    groups.forEach(group => {
+      tasks.push({ task: group.name, done: false, priority: group.priority, estimatedTime: group.estimated_time || null, isGroup: true });
+      (group.subtasks||[]).forEach(sub => {
+        const subName = typeof sub === 'string' ? sub : sub.name;
+        if (subName) tasks.push({ task: '  ' + subName, done: false, priority: group.priority, parentGroup: group.name });
+      });
+    });
+    chrome.storage.local.set({ tasks });
+  });
+}
+
+// ── DAILY UPDATE - Fin de journée / Mise à jour planning ──────────────────────
+let dailyCheckDone = false;
+
+function checkDailyUpdate() {
+  if (!chrome.runtime?.id) return;
+  const now = new Date();
+  const hour = now.getHours();
+  const todayISO = getTodayISO();
+
+  chrome.storage.local.get(['lastDailyCheck'], r => {
+    if (r.lastDailyCheck === todayISO) return; // Already done today
+    if (hour < 21) return; // Only after 9pm
+
+    chrome.storage.local.set({ lastDailyCheck: todayISO });
+    showDailyCheckModal(todayISO);
+  });
+}
+
+function showDailyCheckModal(todayISO) {
+  const ex = document.getElementById('daily-check-modal'); if (ex) ex.remove();
+
+  // Get today's tasks from schedule
+  chrome.storage.local.get(['planSchedule', 'tasks'], async r => {
+    const schedule = r.planSchedule || {};
+    const tasks = r.tasks || [];
+
+    const todayItems = Object.entries(schedule)
+      .filter(([k,v]) => k.startsWith(todayISO) && (v.isTask || v.isRevision) && !v.isBlocked && !v.isEvent)
+      .map(([k,v]) => ({ key: k, taskName: v.taskName, done: v.done || false }));
+
+    if (!todayItems.length) return; // Nothing to check
+
+    const modal = document.createElement('div'); modal.id = 'daily-check-modal';
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;';
+
+    const inner = document.createElement('div');
+    inner.style.cssText = 'background:#111118;border:1px solid #2a2a3e;border-top:2px solid #7c6fcd;border-radius:8px;padding:24px;width:340px;max-height:80vh;overflow-y:auto;';
+
+    let html = '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:#5a5a7a;font-weight:600;margin-bottom:12px;">Bilan de la journee</div>'
+      + '<div style="font-size:13px;color:#c0c0d8;margin-bottom:16px;">Qu\'est-ce que tu as fait aujourd\'hui ?</div>'
+      + '<div id="daily-items">';
+
+    todayItems.forEach((item, i) => {
+      html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #1a1a28;">'
+        + '<input type="checkbox" id="dc-'+i+'" data-key="'+item.key+'" '+(item.done?'checked':'')+' style="accent-color:#7c6fcd;cursor:pointer;">'
+        + '<label for="dc-'+i+'" style="font-size:12px;color:#c0c0d8;cursor:pointer;flex:1;">'+item.taskName+'</label>'
+        + '</div>';
+    });
+
+    html += '</div>'
+      + '<div style="margin-top:12px;"><textarea id="dc-notes" placeholder="Remarques optionnelles..." style="width:100%;min-height:50px;background:#16161f;border:1px solid #2a2a3e;border-radius:4px;color:#d4d4e0;font-size:12px;padding:8px;resize:none;outline:none;font-family:Inter,sans-serif;box-sizing:border-box;"></textarea></div>'
+      + '<div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">'
+      + '<button id="dc-skip" style="padding:7px 14px;background:transparent;border:1px solid #2a2a3e;border-radius:4px;color:#5a5a7a;font-size:12px;cursor:pointer;">Plus tard</button>'
+      + '<button id="dc-save" style="padding:7px 16px;background:#7c6fcd;border:none;border-radius:4px;color:white;font-size:12px;font-weight:500;cursor:pointer;">Enregistrer et mettre a jour</button>'
+      + '</div>';
+
+    inner.innerHTML = html;
+    modal.appendChild(inner);
+    document.body.appendChild(modal);
+
+    document.getElementById('dc-skip').addEventListener('click', () => modal.remove());
+    document.getElementById('dc-save').addEventListener('click', async () => {
+      const checkboxes = inner.querySelectorAll('input[type="checkbox"]');
+      const notes = document.getElementById('dc-notes').value.trim();
+      const doneKeys = [];
+      const missedKeys = [];
+
+      checkboxes.forEach(cb => {
+        if (cb.checked) doneKeys.push(cb.dataset.key);
+        else missedKeys.push(cb.dataset.key);
+      });
+
+      // Mark done items
+      doneKeys.forEach(key => {
+        if (planState.schedule[key]) {
+          planState.schedule[key] = Object.assign({}, planState.schedule[key], { done: true });
+        }
+      });
+
+      // Report missed items + reschedule
+      if (missedKeys.length > 0) {
+        await rescheduleMissedItems(missedKeys, notes);
+      } else {
+        saveSchedule();
+        renderPlanning();
+      }
+
+      modal.remove();
+
+      // Send browser notification
+      if (Notification && Notification.permission === 'granted') {
+        new Notification('Planning mis a jour', {
+          body: doneKeys.length + ' tache' + (doneKeys.length>1?'s':'') + ' terminees. Planning ajuste.',
+          icon: chrome.runtime.getURL('icon128.png')
+        });
+      }
+    });
+  });
+}
+
+async function rescheduleMissedItems(missedKeys, notes) {
+  const apiKey = await getStoredKey();
+  if (!apiKey) { saveSchedule(); renderPlanning(); return; }
+
+  const todayISO = getTodayISO();
+  const missedTasks = missedKeys.map(k => planState.schedule[k]?.taskName || k).join(', ');
+
+  // Remove missed items from today
+  missedKeys.forEach(k => { delete planState.schedule[k]; });
+
+  // Get free slots from tomorrow
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowISO = tomorrow.getFullYear()+'-'+String(tomorrow.getMonth()+1).padStart(2,'0')+'-'+String(tomorrow.getDate()).padStart(2,'0');
+  const freeSlots = getFreeSlots(planState.schedule, 2).filter(s => s.date >= tomorrowISO);
+  const blockedList = Object.entries(planState.schedule).filter(([k,v])=>(v.isBlocked||v.isEvent)&&k.split('_')[0]>=tomorrowISO).map(([k,v])=>k+'('+v.taskName+')').join(', ');
+  const freeSlotsStr = freeSlots.slice(0,60).map(s=>s.date+' '+s.hour+'h').join(', ');
+
+  const SYS = 'Tu replaces des taches non terminees. JSON uniquement. Format:{"schedule":[{"taskName":"...","date":"YYYY-MM-DD","hour":19,"duration":1}],"reply":"..."} REGLES: heures 19h-01h UNIQUEMENT, max 3h/nuit, dans les prochains jours, respecter creneaux libres.';
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:800,system:SYS,
+        messages:[{role:'user',content:'Taches a replacer: '+missedTasks+'. Notes: "'+notes+'". A partir du: '+tomorrowISO+'. Cours INTERDITS: '+(blockedList||'aucun')+'. Creneaux libres: '+freeSlotsStr+'.'}]})
+    });
+    const data = await resp.json();
+    if (!data.content||!data.content[0]) throw new Error('vide');
+    let raw = data.content[0].text.trim();
+    if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/,'').trim();
+    const parsed = JSON.parse(raw);
+
+    parsed.schedule.forEach(item => {
+      const key = item.date+'_'+String(item.hour).padStart(2,'0');
+      if (!planState.schedule[key]) {
+        planState.schedule[key] = { taskName: item.taskName, isTask: true };
+      }
+    });
+  } catch(err) {
+    // Fallback: place tomorrow
+    const key = tomorrowISO+'_14';
+    missedKeys.forEach((mk, i) => {
+      const taskName = planState.schedule[mk]?.taskName || 'Tache reportee';
+      const k2 = tomorrowISO+'_'+String(14+i).padStart(2,'0');
+      if (!planState.schedule[k2]) planState.schedule[k2] = { taskName, isTask: true };
+    });
+  }
+
+  saveSchedule(); renderPlanning();
+}
+
+// Request notification permission
+if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+  Notification.requestPermission();
+}
+
+// Check daily at 21h, 23h, 01h
+setInterval(checkDailyUpdate, 60 * 60 * 1000); // Check every hour
+checkDailyUpdate(); // Check on load too
+
+// ── STATS ─────────────────────────────────────────────────────────────────────
+function getProgressLog(){return new Promise(r=>chrome.storage.local.get(['progressLog'],d=>r(d.progressLog||[])));}
+function saveProgressLog(log){chrome.storage.local.set({progressLog:log});}
+function countRevisionHours(schedule){const b={};const t=getTodayISO();Object.entries(schedule).forEach(([k,v])=>{if(!v.isRevision)return;const d=k.split('_')[0];const s=v.subject||'Autre';if(!b[s])b[s]={total:0,past:0,future:0};b[s].total++;if(d<t)b[s].past++;else b[s].future++;});return b;}
+function countWeekRevisionHours(schedule){const ws=getWeekStart(new Date());const we=new Date(ws);we.setDate(we.getDate()+7);const wsI=ws.getFullYear()+'-'+String(ws.getMonth()+1).padStart(2,'0')+'-'+String(ws.getDate()).padStart(2,'0');const weI=we.getFullYear()+'-'+String(we.getMonth()+1).padStart(2,'0')+'-'+String(we.getDate()).padStart(2,'0');const b={};Object.entries(schedule).forEach(([k,v])=>{if(!v.isRevision)return;const d=k.split('_')[0];if(d>=wsI&&d<weI){const s=v.subject||'Autre';b[s]=(b[s]||0)+1;}});return b;}
+function computeStreak(schedule){const dd={};Object.entries(schedule).forEach(([k,v])=>{if(!v.isRevision||!v.done)return;dd[k.split('_')[0]]=true;});let s=0;const c=new Date();while(true){const d=c.getFullYear()+'-'+String(c.getMonth()+1).padStart(2,'0')+'-'+String(c.getDate()).padStart(2,'0');if(dd[d]){s++;c.setDate(c.getDate()-1);}else break;}return s;}
+
+async function renderStatsTab(){
+  const container=document.getElementById('tab-stats'); if(!container)return;
+  const schedule=planState.schedule; const goals=await getRevisionGoals(); const log=await getProgressLog();
+  const hs=countRevisionHours(schedule); const wh=countWeekRevisionHours(schedule); const streak=computeStreak(schedule);
+
+  // Compute today's progress
+  const todayISO = getTodayISO();
+  const todayItems = Object.entries(schedule).filter(([k,v])=>k.startsWith(todayISO)&&(v.isTask||v.isRevision)&&!v.isBlocked&&!v.isEvent);
+  const todayDone = todayItems.filter(([k,v])=>v.done).length;
+  const todayTotal = todayItems.length;
+  const todayPct = todayTotal > 0 ? Math.round((todayDone/todayTotal)*100) : 0;
+
+  const recent=log.slice(-5).reverse();
+  let html='<div class="stats-wrap">';
+
+  // Today progress bar
+  if (todayTotal > 0) {
+    html += '<div class="stats-today-block">';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">';
+    html += '<span class="stats-title">Aujourd hui</span>';
+    html += '<span style="font-size:11px;color:#7c6fcd;font-weight:600;">'+todayDone+'/'+todayTotal+' — '+todayPct+'%</span>';
+    html += '</div>';
+    html += '<div class="stats-bar-wrap" style="height:6px;"><div class="stats-bar" style="width:'+todayPct+'%;background:linear-gradient(90deg,#7c6fcd,#9088c8);"></div></div>';
+    html += '</div>';
+  }
+
+  html += '<div class="stats-header"><div class="stats-title">Progression generale</div>';
+  if(streak>0) html+='<div class="stats-streak">'+streak+' jour'+(streak>1?'s':'')+' consecutifs 🔥</div>';
+  html+='</div>';
+  if(goals.length>0){
+    html+='<div class="stats-section-label">Par matiere</div>';
+    goals.forEach(g=>{
+      const h=hs[g.subject]||{total:0,past:0,future:0}; const w=wh[g.subject]||0; const t=g.hoursPerWeek||2;
+      const pct=Math.min(100,Math.round((w/t)*100));
+      const ln=log.filter(e=>e.subject&&e.subject.toLowerCase()===g.subject.toLowerCase()).slice(-1)[0];
+      html+='<div class="stats-subject-card"><div class="stats-subject-header"><span class="stats-subject-name">'+g.subject+'</span><span class="stats-subject-hours">'+w+'h / '+t+'h sem.</span></div><div class="stats-bar-wrap"><div class="stats-bar" style="width:'+pct+'%"></div></div>';
+      if(h.past>0) html+='<div class="stats-subject-total">'+h.past+'h au total</div>';
+      if(ln) html+='<div class="stats-subject-note">'+ln.summary+'</div>';
+      html+='</div>';
+    });
+  }
+  html+='<div class="stats-section-label" style="margin-top:12px">Rapport de travail</div>';
+  html+='<div class="stats-log-input-wrap"><textarea id="stats-log-input" placeholder="Ex: j ai fait les integrales maths, pas compris les limites. Physique pas touchee."></textarea><button id="stats-log-btn">Enregistrer + adapter planning</button></div>';
+  if(recent.length>0){html+='<div class="stats-log-list">';recent.forEach(e=>{html+='<div class="stats-log-entry"><div class="stats-log-date">'+e.date+'</div><div class="stats-log-text">'+e.summary+'</div>'+(e.adjustments?'<div class="stats-log-adj">'+e.adjustments+'</div>':'')+'</div>';});html+='</div>';}
+  else html+='<div class="stats-log-empty">Raconte-moi ce que tu as fait pour que j adapte le planning.</div>';
+  html+='</div>';
+  container.innerHTML=html;
+  const lb=document.getElementById('stats-log-btn'); if(lb) lb.addEventListener('click',processProgressReport);
+}
+
+async function processProgressReport(){
+  const input=document.getElementById('stats-log-input'); const text=input?input.value.trim():''; if(!text)return;
+  const btn=document.getElementById('stats-log-btn'); if(btn){btn.disabled=true;btn.textContent='Claude analyse...';}
+  const apiKey=await getStoredKey(); if(!apiKey){if(btn){btn.disabled=false;btn.textContent='Enregistrer + adapter planning';}return;}
+  const goals=await getRevisionGoals(); const todayISO=getTodayISO();
+  const goalsStr=goals.map(g=>g.subject+':'+g.hoursPerWeek+'h/sem'+(g.deadline?' deadline:'+g.deadline:'')).join(', ');
+  const SYS='Tu analyses un rapport de progression. JSON uniquement. Format:{"summary":"resume","subjects_done":[{"subject":"maths","hours":2,"notes":"compris X, pas Y"}],"subjects_missed":["physique"],"adjustments":"ce qu on va faire","replan":true,"boost_subjects":["maths"],"skip_subjects":[]} replan=true si besoin changer planning.';
+  try{
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:400,system:SYS,messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Objectifs: '+goalsStr+'. Rapport: "'+text+'"'}]})});
+    const data=await resp.json(); if(!data.content||!data.content[0]) throw new Error('vide');
+    let raw=data.content[0].text.trim(); if(raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
+    const parsed=JSON.parse(raw);
+    const log=await getProgressLog();
+    const entry={date:new Date().toLocaleDateString('fr-FR',{day:'numeric',month:'short'}),dateISO:todayISO,rawText:text,summary:parsed.summary||text.slice(0,80),adjustments:parsed.adjustments||'',timestamp:Date.now()};
+    if(parsed.subjects_done){parsed.subjects_done.forEach(s=>{log.push({subject:s.subject,summary:s.notes||s.subject+' fait',date:entry.date,dateISO:todayISO,timestamp:Date.now()});});}
+    log.push(entry); saveProgressLog(log);
+    if(parsed.subjects_done&&parsed.subjects_done.length>0){
+      const ds=parsed.subjects_done.map(s=>s.subject.toLowerCase()); let changed=false;
+      Object.entries(planState.schedule).forEach(([k,v])=>{if(v.isRevision&&k.startsWith(todayISO)&&ds.includes((v.subject||'').toLowerCase())){planState.schedule[k]=Object.assign({},v,{done:true});changed=true;}});
+      if(changed)saveSchedule();
+    }
+    if(parsed.replan) setTimeout(()=>smartReplanWithContext(parsed),500);
+    if(input)input.value=''; renderStatsTab();
+  }catch(err){console.error(err);}
+  if(btn){btn.disabled=false;btn.textContent='Enregistrer + adapter planning';}
+}
+
+async function smartReplanWithContext(ctx){
+  const st=document.getElementById('plan-ai-status'); if(st)st.textContent='Adaptation planning...';
+  const apiKey=await getStoredKey(); if(!apiKey)return;
+  let goals=await getRevisionGoals(); if(!goals.length)return;
+  if(ctx&&ctx.boost_subjects){goals=goals.map(g=>{if(ctx.boost_subjects.map(s=>s.toLowerCase()).includes(g.subject.toLowerCase()))return Object.assign({},g,{hoursPerWeek:Math.min(g.hoursPerWeek+1,6),boost:true});return g;});}
+  const todayISO=getTodayISO();
+  let schedule=clearRevisionSessions(planState.schedule);
+  const futureFree=getFreeSlots(schedule,4).filter(s=>s.date>=todayISO);
+  const blockedList=Object.entries(schedule).filter(([k,v])=>(v.isBlocked||v.isEvent)&&k.split('_')[0]>=todayISO).map(([k,v])=>k+'('+v.taskName+')').join(', ');
+  const goalsStr=goals.map(g=>g.subject+' '+g.hoursPerWeek+'h/sem priorite:'+g.priority+(g.deadline?' deadline:'+g.deadline:'')+(g.boost?' RENFORCER':'')).join('; ');
+  const ctxStr=ctx?' Renforcer: '+(ctx.boost_subjects||[]).join(',')+'. Acquis: '+(ctx.skip_subjects||[]).join(',')+'.':'';
+  const freeSlotsStr=futureFree.slice(0,120).map(s=>s.date+' '+s.hour+'h').join(', ');
+  const SYS='Planificateur revisions. JSON uniquement. Format:{"sessions":[{"subject":"maths","date":"YYYY-MM-DD","hour":19,"duration":1,"label":"Rev. maths - limites"}],"reply":"..."} Regles ABSOLUES: jamais avant '+todayISO+', jamais sur bloque/event, heures 19h-01h UNIQUEMENT, plus de sessions RENFORCER, max 4h/nuit.';
+  try{
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:2000,system:SYS,messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Objectifs: '+goalsStr+'.'+ctxStr+' Cours INTERDIT: '+(blockedList||'aucun')+'. Creneaux libres: '+(freeSlotsStr||'aucun')+'.'}]})});
+    const data=await resp.json(); if(!data.content||!data.content[0])throw new Error('vide');
+    let raw=data.content[0].text.trim(); if(raw.startsWith('```'))raw=raw.split('```')[1].replace(/^json/,'').trim();
+    const parsed=JSON.parse(raw); let placed=0;
+    parsed.sessions.forEach(s=>{if(s.date<todayISO)return;const dur=s.duration||1;for(let h=s.hour;h<s.hour+dur;h++){const k=s.date+'_'+String(h).padStart(2,'0');if(!schedule[k]){schedule[k]={taskName:s.label||('Rev. '+s.subject),isRevision:true,subject:s.subject};placed++;}}});
+    planState.schedule=schedule;saveSchedule();renderPlanning();renderRevisionGoalsPanel();renderStatsTab();
+    if(st){st.textContent=placed+' sessions replannees.';setTimeout(()=>{if(st)st.textContent='';},5000);}
+  }catch(err){if(st)st.textContent='Erreur: '+err.message;}
+}
 
 setInterval(() => loadTasks(renderTasks), 30000);

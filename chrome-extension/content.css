@@ -1061,3 +1061,206 @@
   text-align: center !important;
   padding: 4px !important;
 }
+/* ── Exam Panel ──────────────────────────────────────────────────────────── */
+#exam-panel {
+  position: fixed !important;
+  width: 380px !important;
+  background: #111118 !important;
+  border: 1px solid #1e1e2e !important;
+  border-top: 2px solid #c06060 !important;
+  border-radius: 8px !important;
+  z-index: 2147483646 !important;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.7) !important;
+  display: none !important;
+  font-family: 'Inter', 'Segoe UI', sans-serif !important;
+  color: #d4d4e0 !important;
+  max-height: 600px !important;
+  overflow: hidden !important;
+  flex-direction: column !important;
+}
+#exam-panel.open { display: flex !important; }
+
+#exam-header {
+  display: flex !important;
+  justify-content: space-between !important;
+  align-items: center !important;
+  padding: 11px 16px !important;
+  border-bottom: 1px solid #1e1e2e !important;
+  flex-shrink: 0 !important;
+  background: #111118 !important;
+}
+#exam-header span:first-child {
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.1em !important;
+  color: #c06060 !important;
+}
+#exam-close {
+  cursor: pointer !important;
+  font-size: 11px !important;
+  color: #3d3d5c !important;
+  transition: color 0.15s !important;
+}
+#exam-close:hover { color: #d4d4e0 !important; }
+
+#exam-scrollable {
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 !important;
+  overflow: hidden !important;
+}
+
+#exam-info-bar {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 5px !important;
+  padding: 8px 14px !important;
+  border-bottom: 1px solid #1a1a28 !important;
+  flex-shrink: 0 !important;
+}
+.exam-event-chip {
+  font-size: 10px !important;
+  background: #2a1a1a !important;
+  color: #c06060 !important;
+  border: 1px solid #5a2020 !important;
+  border-radius: 4px !important;
+  padding: 3px 8px !important;
+  font-weight: 500 !important;
+}
+
+#exam-chat-messages {
+  flex: 1 !important;
+  overflow-y: auto !important;
+  padding: 10px 14px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  min-height: 200px !important;
+}
+#exam-chat-messages::-webkit-scrollbar { width: 3px !important; }
+#exam-chat-messages::-webkit-scrollbar-thumb { background: #2a2a3e !important; border-radius: 2px !important; }
+
+.exam-msg {
+  max-width: 90% !important;
+  padding: 8px 12px !important;
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  line-height: 1.5 !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+.exam-msg-user {
+  background: #1e1a3a !important;
+  border: 1px solid #3d3660 !important;
+  color: #c0c0d8 !important;
+  align-self: flex-end !important;
+}
+.exam-msg-assistant {
+  background: #16161f !important;
+  border: 1px solid #2a2a3e !important;
+  border-left: 2px solid #c06060 !important;
+  color: #d4d4e0 !important;
+  align-self: flex-start !important;
+}
+
+#exam-input-area {
+  padding: 10px 14px !important;
+  border-top: 1px solid #1e1e2e !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 7px !important;
+  flex-shrink: 0 !important;
+  background: #111118 !important;
+}
+
+#exam-drop-zone {
+  border: 1px dashed #2a2a3e !important;
+  border-radius: 5px !important;
+  padding: 7px 12px !important;
+  text-align: center !important;
+  font-size: 11px !important;
+  color: #3d3d5c !important;
+  cursor: pointer !important;
+  transition: all 0.15s !important;
+}
+#exam-drop-zone:hover, #exam-drop-zone.drag-over { border-color: #c06060 !important; color: #c06060 !important; background: #1a1010 !important; }
+
+#exam-attached-list {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 4px !important;
+}
+.exam-file-chip {
+  display: flex !important;
+  align-items: center !important;
+  gap: 4px !important;
+  background: #1a1010 !important;
+  border: 1px solid #5a2020 !important;
+  border-radius: 4px !important;
+  padding: 3px 7px !important;
+  font-size: 10px !important;
+  color: #c06060 !important;
+}
+.exam-file-remove { cursor: pointer !important; margin-left: 2px !important; opacity: 0.7 !important; }
+.exam-file-remove:hover { opacity: 1 !important; }
+
+#exam-input-area > div:last-child {
+  display: flex !important;
+  gap: 6px !important;
+  align-items: flex-end !important;
+}
+
+#exam-chat-input {
+  flex: 1 !important;
+  background: #16161f !important;
+  border: 1px solid #2a2a3e !important;
+  border-radius: 5px !important;
+  color: #d4d4e0 !important;
+  font-size: 12px !important;
+  padding: 8px 10px !important;
+  resize: none !important;
+  outline: none !important;
+  font-family: 'Inter', 'Segoe UI', sans-serif !important;
+  line-height: 1.5 !important;
+  min-height: 48px !important;
+  max-height: 100px !important;
+  transition: border-color 0.15s !important;
+}
+#exam-chat-input:focus { border-color: #c06060 !important; }
+#exam-chat-input::placeholder { color: #3d3d5c !important; }
+
+#exam-send-btn {
+  width: 34px !important;
+  height: 34px !important;
+  background: #c06060 !important;
+  color: white !important;
+  border: none !important;
+  border-radius: 5px !important;
+  cursor: pointer !important;
+  font-size: 16px !important;
+  flex-shrink: 0 !important;
+  transition: background 0.15s !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+}
+#exam-send-btn:hover { background: #a04040 !important; }
+#exam-send-btn:disabled { opacity: 0.4 !important; cursor: not-allowed !important; }
+
+/* Exam button in panel */
+#bubble-exam-btn {
+  padding: 7px 0 !important;
+  background: #1a1010 !important;
+  color: #c06060 !important;
+  border: 1px solid #5a2020 !important;
+  border-radius: 4px !important;
+  cursor: pointer !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  width: 100% !important;
+  font-family: 'Inter', 'Segoe UI', sans-serif !important;
+  letter-spacing: 0.04em !important;
+  transition: all 0.15s !important;
+}
+#bubble-exam-btn:hover { background: #2a1010 !important; border-color: #c06060 !important; }

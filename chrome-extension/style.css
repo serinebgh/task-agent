@@ -1046,65 +1046,54 @@ body {
   cursor: default !important;
 }
 /* ── Revision Goals Panel ─────────────────────────────────────────────────── */
-#revision-goals-panel {
-  margin-bottom: 8px;
-  padding: 0 2px;
-}
-.rg-title {
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: #3d3d5c;
-  font-weight: 600;
-  margin-bottom: 5px;
-}
-.rg-empty {
-  font-size: 11px;
-  color: #2a2a3e;
-  padding: 4px 0 8px;
-  font-style: italic;
-}
-.rg-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  background: #16161f;
-  border-radius: 4px;
-  margin-bottom: 3px;
-  font-size: 11px;
-  border-left: 2px solid #2a2a3e;
-}
-.rg-item .rg-priority { font-weight: 700; flex-shrink: 0; font-size: 10px; }
-.rg-item .rg-priority.high { color: #7a3a3a; }
-.rg-item .rg-priority.medium { color: #5a5a2a; }
-.rg-item .rg-priority.low { color: #2a4a5a; }
+#revision-goals-panel { margin-bottom: 8px; padding: 0 2px; }
+.rg-title { font-size: 9px; text-transform: uppercase; letter-spacing: 0.12em; color: #3d3d5c; font-weight: 600; margin-bottom: 5px; }
+.rg-empty { font-size: 11px; color: #2a2a3e; padding: 4px 0 8px; font-style: italic; }
+.rg-item { display: flex; align-items: center; gap: 6px; padding: 4px 6px; background: #16161f; border-radius: 4px; margin-bottom: 3px; font-size: 11px; border-left: 2px solid #2a2a3e; }
+.rg-priority { font-weight: 700; flex-shrink: 0; font-size: 10px; }
+.rg-priority.high { color: #7a3a3a; }
+.rg-priority.medium { color: #5a5a2a; }
+.rg-priority.low { color: #2a4a5a; }
 .rg-subject { flex: 1; color: #c0c0d8; font-weight: 500; }
 .rg-hours { color: #5a5a7a; font-size: 10px; flex-shrink: 0; }
 .rg-deadline { color: #7c6fcd; font-size: 10px; flex-shrink: 0; }
 .rg-delete { cursor: pointer; color: #2a2a3e; font-size: 10px; flex-shrink: 0; transition: color 0.15s; }
 .rg-delete:hover { color: #8a3a3a; }
-#rg-replan-btn {
-  width: 100%;
-  margin-top: 5px;
-  padding: 6px;
-  background: #1a1a2e;
-  border: 1px solid #3d3660;
-  border-radius: 4px;
-  color: #7c6fcd;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  font-family: 'Inter', 'Segoe UI', sans-serif;
-  letter-spacing: 0.04em;
-  transition: all 0.15s;
-}
+#rg-replan-btn { width: 100%; margin-top: 5px; padding: 6px; background: #1a1a2e; border: 1px solid #3d3660; border-radius: 4px; color: #7c6fcd; font-size: 11px; font-weight: 500; cursor: pointer; font-family: 'Inter', 'Segoe UI', sans-serif; transition: all 0.15s; }
 #rg-replan-btn:hover { background: #1e1a3a; border-color: #7c6fcd; }
 
-/* Revision session cells */
-.cell-task.is-revision {
-  background: #1a2a1a !important;
-  border-color: #3d6a50 !important;
-  color: #6a9a7a !important;
-}
+/* Revision / task cells */
+.cell-task.is-revision { background: #1a2a1a !important; border-color: #3d6a50 !important; color: #6a9a7a !important; }
 .is-revision-cell { background: #141f14 !important; }
+.cell-task.is-task { background: #1a1a2e !important; border-color: #4d4470 !important; color: #9088c8 !important; }
+
+/* Stats Tab */
+#tab-stats { display: none; flex-direction: column; gap: 0; padding: 16px; }
+#tab-stats.active { display: flex; }
+.stats-wrap { display: flex; flex-direction: column; gap: 10px; }
+.stats-today-block { background: #16161f; border-radius: 5px; padding: 10px 12px; border: 1px solid #2a2a3e; }
+.stats-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 10px; border-bottom: 1px solid #1e1e2e; }
+.stats-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em; color: #5a5a7a; font-weight: 600; }
+.stats-streak { font-size: 11px; color: #9088c8; font-weight: 600; }
+.stats-section-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.12em; color: #3d3d5c; font-weight: 600; margin-top: 4px; }
+.stats-subject-card { background: #16161f; border-radius: 5px; padding: 10px 12px; border: 1px solid #1e1e2e; display: flex; flex-direction: column; gap: 5px; }
+.stats-subject-header { display: flex; justify-content: space-between; align-items: center; }
+.stats-subject-name { font-size: 12px; font-weight: 600; color: #d4d4e0; }
+.stats-subject-hours { font-size: 10px; color: #5a5a7a; }
+.stats-bar-wrap { width: 100%; height: 3px; background: #2a2a3e; border-radius: 2px; overflow: hidden; }
+.stats-bar { height: 100%; background: linear-gradient(90deg, #3d6a50, #6a9a7a); border-radius: 2px; transition: width 0.4s ease; min-width: 2px; }
+.stats-subject-total { font-size: 10px; color: #3d3d5c; }
+.stats-subject-note { font-size: 11px; color: #5a5a7a; font-style: italic; line-height: 1.4; padding-top: 2px; border-top: 1px solid #1a1a28; margin-top: 2px; }
+.stats-log-input-wrap { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+#stats-log-input { width: 100%; min-height: 72px; background: #16161f; border: 1px solid #2a2a3e; border-radius: 5px; color: #d4d4e0; font-size: 12px; padding: 10px; resize: none; outline: none; font-family: 'Inter','Segoe UI',sans-serif; line-height: 1.6; transition: border-color 0.15s; box-sizing: border-box; }
+#stats-log-input:focus { border-color: #7c6fcd; }
+#stats-log-input::placeholder { color: #2a2a3e; }
+#stats-log-btn { padding: 8px; background: #7c6fcd; color: white; border: none; border-radius: 4px; font-size: 12px; font-weight: 500; cursor: pointer; font-family: 'Inter','Segoe UI',sans-serif; transition: background 0.15s; }
+#stats-log-btn:hover { background: #6355b5; }
+#stats-log-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.stats-log-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; max-height: 180px; overflow-y: auto; }
+.stats-log-entry { background: #16161f; border-radius: 4px; padding: 8px 10px; border-left: 2px solid #3d3660; }
+.stats-log-date { font-size: 9px; color: #3d3d5c; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 3px; }
+.stats-log-text { font-size: 11px; color: #c0c0d8; line-height: 1.5; }
+.stats-log-adj { font-size: 10px; color: #6a9a7a; margin-top: 4px; font-style: italic; }
+.stats-log-empty { font-size: 11px; color: #2a2a3e; font-style: italic; padding: 8px 0; }

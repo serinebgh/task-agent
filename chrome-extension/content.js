@@ -188,6 +188,7 @@ panel.innerHTML = `
     <input type="text" id="bubble-reminders" placeholder="Rappels : 60, 30, 10 min avant (optionnel)" />
     <button id="bubble-add-btn">Ajouter</button>
     <button id="bubble-organize-btn">Organiser avec Claude</button>
+    <button id="bubble-exam-btn">🎯 Mode Exam</button>
   </div>
   <div id="bubble-status"></div>
 `;
@@ -227,6 +228,34 @@ organizePanel.innerHTML = `
   </div>
 `;
 document.body.appendChild(organizePanel);
+
+// ── Panel Exam Mode ──────────────────────────────────────────────────────────
+const examPanel = document.createElement('div');
+examPanel.id = 'exam-panel';
+examPanel.innerHTML = `
+  <div id="exam-header">
+    <span>Mode Exam</span>
+    <span id="exam-close">×</span>
+  </div>
+  <div id="exam-scrollable">
+    <div id="exam-info-bar"></div>
+    <div id="exam-chat-messages"></div>
+    <div id="exam-input-area">
+      <div id="exam-drop-zone">
+        <span>+ Ajouter cours / exercices (PDF ou image)</span>
+        <input type="file" id="exam-file-input" accept=".pdf,image/*" multiple style="display:none" />
+      </div>
+      <div id="exam-attached-list"></div>
+      <div style="display:flex;gap:6px;align-items:flex-end;">
+        <textarea id="exam-chat-input" placeholder="Ex: j'ai besoin d'un plan de révision pour mercredi, voici mes cours..."></textarea>
+        <button id="exam-send-btn">→</button>
+      </div>
+    </div>
+  </div>
+`;
+document.body.appendChild(examPanel);
+
+
 
 // ── Focus overlay ─────────────────────────────────────────────────────────────
 const focusOverlay = document.createElement('div');
@@ -815,28 +844,12 @@ document.getElementById('organize-add-group-btn').addEventListener('click', () =
 document.getElementById('organize-import-btn').addEventListener('click', () => {
   if (!generatedTasks.length) return;
   document.querySelectorAll('[contenteditable]:focus').forEach(el => syncEditToData(el));
-  chrome.storage.local.get(['tasks'], (result) => {
-    const tasks = result.tasks || [];
-    generatedTasks.forEach(group => {
-      tasks.push({ task: group.name, done: false, deadline: null, reminders: [], isGroup: true, priority: group.priority, estimatedTime: group.estimated_time || null });
-      (group.subtasks || []).forEach(sub => {
-        const subName = typeof sub === 'string' ? sub : sub.name;
-        if (subName) tasks.push({ task: '  ' + subName, done: false, deadline: null, reminders: [], parentGroup: group.name });
-      });
-    });
-    chrome.storage.local.set({ tasks }, () => {
-      setBubbleStatus('Tâches importées.');
-      organizePanel.classList.remove('open');
-      resetOrganizePanel();
-      panel.classList.add('open');
-      positionPanel();
-      renderBubbleTasks();
-      const orgInput = document.getElementById('organize-input')?.value || '';
-      if (orgInput.length > 20) {
-        getApiKey().then(key => { if (key) checkAndAskMemory(orgInput, key); });
-      }
-    });
-  });
+  const tasksToSchedule = generatedTasks.slice();
+  organizePanel.classList.remove('open');
+  resetOrganizePanel();
+  panel.classList.add('open');
+  positionPanel();
+  showHoursPerDayModalBubble(tasksToSchedule);
 });
 
 function resetOrganizePanel() {
@@ -1063,7 +1076,8 @@ function renderBubbleTasks() {
     if (!list) return;
 
     // Get today's scheduled items
-    const todayStr = new Date().toISOString().slice(0, 10);
+    const _now = new Date();
+    const todayStr = _now.getFullYear()+'-'+String(_now.getMonth()+1).padStart(2,'0')+'-'+String(_now.getDate()).padStart(2,'0');
     const now = new Date();
     const currentHour = now.getHours();
 
@@ -1075,7 +1089,7 @@ function renderBubbleTasks() {
         isEvent: val.isEvent,
         isBlocked: val.isBlocked
       }))
-      .filter(s => !s.isBlocked)
+      .filter(s => !s.isBlocked && s.taskName)
       .sort((a, b) => a.hour - b.hour);
 
     const pendingTasks = tasks.filter(t => !t.done && !t.isGroup);
@@ -1158,6 +1172,416 @@ function showNotification(msg) {
   document.getElementById('task-modal-list').innerHTML =
     pendingReminders.map(r => '<div class="modal-reminder-item">' + r + '</div>').join('');
   overlay.classList.add('open');
+}
+
+
+// ── PLANIFIER LES TÂCHES DANS LE CALENDRIER ──────────────────────────────────
+function showHoursPerDayModalBubble(groups) {
+  const ex = document.getElementById('bubble-hours-modal'); if (ex) ex.remove();
+  const modal = document.createElement('div'); modal.id = 'bubble-hours-modal';
+  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:2147483647;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;';
+  const inner = document.createElement('div');
+  inner.style.cssText = 'background:#111118;border:1px solid #2a2a3e;border-top:2px solid #7c6fcd;border-radius:8px;padding:24px;width:320px;';
+  inner.innerHTML = '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:#5a5a7a;font-weight:600;margin-bottom:12px;">Planifier dans le calendrier</div>'
+    + '<div style="font-size:13px;color:#c0c0d8;margin-bottom:16px;line-height:1.5;">Combien d\'heures veux-tu travailler par jour ?</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">'
+    + ['1h','2h','3h','4h'].map(h => '<button class="bh-btn" data-h="'+h.replace('h','')+'" style="flex:1;padding:9px;background:#16161f;border:1px solid #2a2a3e;border-radius:4px;color:#7070a0;font-size:13px;cursor:pointer;font-family:Inter,sans-serif;">'+h+'</button>').join('')
+    + '</div>'
+    + '<button id="bh-skip" style="width:100%;padding:8px;background:transparent;border:1px solid #2a2a3e;border-radius:4px;color:#5a5a7a;font-size:12px;cursor:pointer;font-family:Inter,sans-serif;">Juste ajouter aux taches (sans planning)</button>';
+  modal.appendChild(inner); document.body.appendChild(modal);
+
+  inner.querySelectorAll('.bh-btn').forEach(btn => {
+    btn.addEventListener('mouseover', () => { btn.style.borderColor='#7c6fcd'; btn.style.color='#9088c8'; });
+    btn.addEventListener('mouseout', () => { btn.style.borderColor='#2a2a3e'; btn.style.color='#7070a0'; });
+    btn.addEventListener('click', () => {
+      modal.remove();
+      scheduleTasksViaClaude(groups, parseInt(btn.dataset.h));
+    });
+  });
+  document.getElementById('bh-skip').addEventListener('click', () => {
+    modal.remove();
+    addGroupsToTasksOnly(groups);
+    renderBubbleTasks();
+    setBubbleStatus('Taches ajoutees.');
+  });
+}
+
+async function scheduleTasksViaClaude(groups, hoursPerDay) {
+  setBubbleStatus('Claude planifie...');
+  const apiKey = await getApiKey();
+  if (!apiKey) { addGroupsToTasksOnly(groups); renderBubbleTasks(); return; }
+
+  // Get schedule from storage
+  chrome.storage.local.get(['planSchedule'], async r => {
+    const schedule = r.planSchedule || {};
+
+    // Compute today ISO locally
+    const now = new Date();
+    const todayISO = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+    const tomorrow = new Date(now); tomorrow.setDate(now.getDate()+1);
+    const tomorrowISO = tomorrow.getFullYear()+'-'+String(tomorrow.getMonth()+1).padStart(2,'0')+'-'+String(tomorrow.getDate()).padStart(2,'0');
+
+    // Get free slots: 19h-01h for next 3 weeks
+    const WORK_H = [19,20,21,22,23,0,1];
+    const freeSlots = [];
+    const start = new Date(now); start.setHours(0,0,0,0);
+    const end = new Date(start); end.setDate(end.getDate()+21);
+    const cur = new Date(start);
+    const seen = new Set();
+    while (cur < end) {
+      const ds = cur.getFullYear()+'-'+String(cur.getMonth()+1).padStart(2,'0')+'-'+String(cur.getDate()).padStart(2,'0');
+      if (ds >= todayISO) {
+        WORK_H.forEach(h => {
+          let slotDate = ds;
+          if (h <= 1) {
+            const nd = new Date(cur); nd.setDate(cur.getDate()+1);
+            slotDate = nd.getFullYear()+'-'+String(nd.getMonth()+1).padStart(2,'0')+'-'+String(nd.getDate()).padStart(2,'0');
+          }
+          const key = slotDate+'_'+String(h).padStart(2,'0');
+          if (!schedule[key] && !seen.has(key)) { seen.add(key); freeSlots.push(slotDate+' '+h+'h'); }
+        });
+      }
+      cur.setDate(cur.getDate()+1);
+    }
+
+    const blockedList = Object.entries(schedule)
+      .filter(([k,v]) => (v.isBlocked||v.isEvent) && k.split('_')[0] >= todayISO)
+      .slice(0,50).map(([k,v]) => k+'('+v.taskName+')').join(', ');
+
+    const tasksList = groups.map(g => {
+      const subs = (g.subtasks||[]).map(s=>typeof s==='string'?s:s.name).filter(Boolean).join(', ');
+      return '"'+g.name+'"'+(g.estimated_time?' ('+g.estimated_time+')':'')+(subs?' ['+subs+']':'')+(g.deadline?' deadline:'+g.deadline:'')+' priorite:'+g.priority;
+    }).join('; ');
+
+    // Get upcoming events for context
+    const upcomingEvts = Object.entries(schedule)
+      .filter(([k,v])=>v.isEvent && k.split('_')[0]>=todayISO)
+      .sort(([a],[b])=>a.localeCompare(b))
+      .slice(0,3).map(([k,v])=>k.split('_')[0]+':'+v.taskName).join(', ');
+    const SYS = 'Tu es planificateur. JSON uniquement. Format:{"schedule":[{"taskName":"...","date":"YYYY-MM-DD","hour":19,"duration":1,"groupIndex":0}],"reply":"..."}'
+      + ' REGLES ABSOLUES: max '+hoursPerDay+'h de travail par nuit, heures 19h-01h UNIQUEMENT, jamais avant '+todayISO
+      + ', jamais sur creneaux bloques, si deadline proche concentrer AVANT la deadline, sessions 1-2h.'
+      + (upcomingEvts ? ' Exams/events: '+upcomingEvts+'.' : '');
+
+    try {
+      const resp = await fetch('https://api.anthropic.com/v1/messages', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+        body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1500,system:SYS,
+          messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Max '+hoursPerDay+'h/jour. Taches a planifier: '+tasksList+'. Cours/events INTERDITS: '+(blockedList||'aucun')+'. Creneaux libres dispo: '+freeSlots.slice(0,100).join(', ')+'.'}]})
+      });
+      const data = await resp.json();
+      if (!data.content||!data.content[0]) throw new Error('vide');
+      let raw = data.content[0].text.trim();
+      if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/,'').trim();
+      const parsed = JSON.parse(raw);
+
+      // Add tasks to storage AND place in calendar
+      chrome.storage.local.get(['tasks'], res2 => {
+        const tasks = res2.tasks || [];
+        groups.forEach(group => {
+          tasks.push({ task: group.name, done: false, priority: group.priority, estimatedTime: group.estimated_time||null, isGroup: true, deadline: group.deadline||null });
+          (group.subtasks||[]).forEach(sub => {
+            const sn = typeof sub==='string'?sub:sub.name; if(!sn) return;
+            tasks.push({ task: '  '+sn, done: false, priority: group.priority, parentGroup: group.name });
+          });
+        });
+        // Place in schedule
+        let placed = 0;
+        parsed.schedule.forEach(item => {
+          if (item.date < todayISO) return;
+          const dur = item.duration || 1;
+          for (let h = item.hour; h < item.hour+dur; h++) {
+            const key = item.date+'_'+String(h).padStart(2,'0');
+            if (!schedule[key]) { schedule[key] = { taskName: item.taskName, isTask: true }; placed++; }
+          }
+        });
+        chrome.storage.local.set({ tasks, planSchedule: schedule }, () => {
+          renderBubbleTasks();
+          setBubbleStatus(placed+' creneaux places dans le planning.');
+          if (parsed.reply) setTimeout(()=>setBubbleStatus(parsed.reply), 2600);
+        });
+      });
+    } catch(err) {
+      addGroupsToTasksOnly(groups);
+      renderBubbleTasks();
+      setBubbleStatus('Taches ajoutees (planning non dispo).');
+    }
+  });
+}
+
+function addGroupsToTasksOnly(groups) {
+  chrome.storage.local.get(['tasks'], r => {
+    const tasks = r.tasks || [];
+    groups.forEach(group => {
+      tasks.push({ task: group.name, done: false, priority: group.priority, estimatedTime: group.estimated_time||null, isGroup: true });
+      (group.subtasks||[]).forEach(sub => {
+        const sn = typeof sub==='string'?sub:sub.name; if(!sn) return;
+        tasks.push({ task: '  '+sn, done: false, priority: group.priority, parentGroup: group.name });
+      });
+    });
+    chrome.storage.local.set({ tasks });
+  });
+}
+
+
+// ── EXAM MODE LOGIC ──────────────────────────────────────────────────────────
+let examAttachedFiles = [];
+let examChatHistory = [];
+
+// Open/close exam panel
+document.getElementById('bubble-exam-btn').addEventListener('click', () => {
+  panel.classList.remove('open');
+  organizePanel.classList.remove('open');
+  examPanel.classList.toggle('open');
+  if (examPanel.classList.contains('open')) {
+    positionExamPanel();
+    loadExamEvents();
+    setTimeout(() => document.getElementById('exam-chat-input')?.focus(), 50);
+  }
+});
+document.getElementById('exam-close').addEventListener('click', () => {
+  examPanel.classList.remove('open');
+});
+
+function positionExamPanel() {
+  const rect = bubble.getBoundingClientRect();
+  const w = 380, h = 600;
+  let top = rect.bottom + 8;
+  if (top + h > window.innerHeight - 10) top = rect.top - h - 8;
+  let left = rect.left;
+  if (left + w > window.innerWidth - 10) left = window.innerWidth - w - 10;
+  if (left < 10) left = 10;
+  examPanel.style.top = top + 'px'; examPanel.style.left = left + 'px';
+}
+
+// Load upcoming events to show in info bar
+function loadExamEvents() {
+  chrome.storage.local.get(['planSchedule'], r => {
+    const schedule = r.planSchedule || {};
+    const now = new Date();
+    const todayISO = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+    // Find events in next 7 days
+    const events = Object.entries(schedule)
+      .filter(([k,v]) => v.isEvent && k.split('_')[0] >= todayISO)
+      .map(([k,v]) => ({ date: k.split('_')[0], name: v.taskName }))
+      .filter((v,i,a) => a.findIndex(x=>x.date===v.date&&x.name===v.name)===i)
+      .slice(0,3);
+    const bar = document.getElementById('exam-info-bar');
+    if (!bar) return;
+    if (events.length > 0) {
+      bar.innerHTML = events.map(e => {
+        const d = new Date(e.date+'T12:00:00');
+        const label = d.toLocaleDateString('fr-FR',{weekday:'short',day:'numeric',month:'short'});
+        return '<span class="exam-event-chip">📅 '+e.name+' — '+label+'</span>';
+      }).join('');
+    } else {
+      bar.innerHTML = '<span style="font-size:11px;color:#3d3d5c;">Aucun exam trouvé. Dis-moi la date de ton exam.</span>';
+    }
+  });
+}
+
+// File attach
+const examDropZone = document.getElementById('exam-drop-zone');
+const examFileInput = document.getElementById('exam-file-input');
+examDropZone.addEventListener('click', () => examFileInput.click());
+examDropZone.addEventListener('dragover', e => { e.preventDefault(); examDropZone.classList.add('drag-over'); });
+examDropZone.addEventListener('dragleave', () => examDropZone.classList.remove('drag-over'));
+examDropZone.addEventListener('drop', e => { e.preventDefault(); examDropZone.classList.remove('drag-over'); addExamFiles(Array.from(e.dataTransfer.files)); });
+examFileInput.addEventListener('change', () => { addExamFiles(Array.from(examFileInput.files)); examFileInput.value = ''; });
+
+function addExamFiles(files) {
+  const allowed = ['application/pdf','image/png','image/jpeg','image/webp','image/gif'];
+  files.forEach(f => {
+    if (!allowed.includes(f.type)) return;
+    if (examAttachedFiles.length >= 8) { setBubbleStatus('Max 8 fichiers.'); return; }
+    examAttachedFiles.push(f);
+  });
+  renderExamAttached();
+}
+
+function renderExamAttached() {
+  const list = document.getElementById('exam-attached-list');
+  if (!list) return;
+  if (!examAttachedFiles.length) { list.innerHTML=''; return; }
+  list.innerHTML = examAttachedFiles.map((f,i) => {
+    const icon = f.type.startsWith('image/') ? '🖼' : '📄';
+    return '<div class="exam-file-chip">'+icon+' <span>'+f.name.slice(0,20)+(f.name.length>20?'…':'')+'</span><span class="exam-file-remove" data-i="'+i+'">×</span></div>';
+  }).join('');
+  list.querySelectorAll('.exam-file-remove').forEach(btn => {
+    btn.addEventListener('click', () => { examAttachedFiles.splice(parseInt(btn.dataset.i),1); renderExamAttached(); });
+  });
+}
+
+// Send message
+document.getElementById('exam-send-btn').addEventListener('click', sendExamMessage);
+document.getElementById('exam-chat-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendExamMessage(); }
+});
+
+function addExamMessage(role, text, isHtml) {
+  const msgs = document.getElementById('exam-chat-messages');
+  if (!msgs) return;
+  const div = document.createElement('div');
+  div.className = 'exam-msg exam-msg-' + role;
+  if (isHtml) div.innerHTML = text; else div.textContent = text;
+  msgs.appendChild(div);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+async function sendExamMessage() {
+  const input = document.getElementById('exam-chat-input');
+  const text = input ? input.value.trim() : '';
+  if (!text && examAttachedFiles.length === 0) return;
+
+  const btn = document.getElementById('exam-send-btn');
+  btn.disabled = true; btn.textContent = '...';
+
+  const apiKey = await getApiKey();
+  if (!apiKey) { addExamMessage('assistant', 'Clé Anthropic manquante.'); btn.disabled=false; btn.textContent='→'; return; }
+
+  // Show user message
+  if (text) addExamMessage('user', text + (examAttachedFiles.length > 0 ? ' [+'+examAttachedFiles.length+' fichier(s)]' : ''));
+
+  // Get context: schedule + tasks
+  const ctxData = await new Promise(r => chrome.storage.local.get(['planSchedule','tasks','userProfile'], r));
+  const schedule = ctxData.planSchedule || {};
+  const profile = ctxData.userProfile || {};
+
+  const now = new Date();
+  const todayISO = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-'+String(now.getDate()).padStart(2,'0');
+
+  // Find upcoming exams
+  const upcomingExams = Object.entries(schedule)
+    .filter(([k,v]) => v.isEvent && k.split('_')[0] >= todayISO)
+    .map(([k,v]) => k.split('_')[0]+': '+v.taskName)
+    .filter((v,i,a)=>a.indexOf(v)===i).slice(0,5).join(', ');
+
+  // Compute days until exam
+  const nextExamEntry = Object.entries(schedule)
+    .filter(([k,v]) => v.isEvent && k.split('_')[0] > todayISO)
+    .sort(([a],[b])=>a.localeCompare(b))[0];
+  let daysUntilExam = '';
+  if (nextExamEntry) {
+    const examDate = new Date(nextExamEntry[0].split('_')[0]+'T12:00:00');
+    const diff = Math.ceil((examDate - now) / (1000*60*60*24));
+    daysUntilExam = diff + ' jour(s) avant le prochain exam';
+  }
+
+  // Free slots between now and exam
+  const examDateISO = nextExamEntry ? nextExamEntry[0].split('_')[0] : '';
+  const freeSlots = [];
+  if (examDateISO) {
+    const cur2 = new Date(now); cur2.setHours(0,0,0,0);
+    const examD = new Date(examDateISO+'T12:00:00');
+    while (cur2 < examD) {
+      const ds = cur2.getFullYear()+'-'+String(cur2.getMonth()+1).padStart(2,'0')+'-'+String(cur2.getDate()).padStart(2,'0');
+      if (ds >= todayISO) {
+        [19,20,21,22,23,0,1].forEach(h => {
+          const key = ds+'_'+String(h).padStart(2,'0');
+          if (!schedule[key]) freeSlots.push(ds+' '+h+'h');
+        });
+      }
+      cur2.setDate(cur2.getDate()+1);
+    }
+  }
+
+  const SYSTEM = 'Tu es un assistant de revision expert et un coach d\'exam.'
+    + (profile.name ? ' Tu parles à '+profile.name+'.' : '')
+    + ' Aujourd hui: '+todayISO+'.'
+    + (upcomingExams ? ' Exams a venir: '+upcomingExams+'.' : '')
+    + (daysUntilExam ? ' '+daysUntilExam+'.' : '')
+    + (freeSlots.length > 0 ? ' Creneaux libres (19h-01h): '+freeSlots.slice(0,30).join(', ')+'.' : '')
+    + '\n\nTu peux:'
+    + '\n1. Analyser les PDFs/cours fournis et identifier les points cles'
+    + '\n2. Creer un plan de revision optimise selon le temps restant'
+    + '\n3. Generer des sessions de revision dans le planning (reponds avec JSON en fin: {"plan":[{"date":"YYYY-MM-DD","hour":19,"subject":"...","label":"...","duration":2}]})'
+    + '\n4. Donner des conseils tactiques pour maximiser les chances'
+    + '\nSi tu generes un plan, inclus le JSON a la fin de ta reponse. Reponds en francais, sois concis et direct.';
+
+  // Build content blocks
+  const contentBlocks = [];
+  for (const f of examAttachedFiles) {
+    const b64 = await new Promise((res,rej)=>{const rd=new FileReader();rd.onload=()=>res(rd.result.split(',')[1]);rd.onerror=rej;rd.readAsDataURL(f);});
+    if (f.type==='application/pdf') contentBlocks.push({type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}});
+    else contentBlocks.push({type:'image',source:{type:'base64',media_type:f.type,data:b64}});
+  }
+  if (text) contentBlocks.push({type:'text',text});
+  if (!contentBlocks.length) { btn.disabled=false; btn.textContent='→'; return; }
+
+  // Build messages with history
+  const messages = [...examChatHistory, {role:'user', content: contentBlocks.length===1&&contentBlocks[0].type==='text' ? text : contentBlocks}];
+
+  // Clear attached files after sending
+  examAttachedFiles = []; renderExamAttached();
+  if (input) input.value = '';
+
+  addExamMessage('assistant', '...', false);
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-opus-4-6',max_tokens:2000,system:SYSTEM,messages})
+    });
+    const data = await resp.json();
+    if (!data.content||!data.content[0]) throw new Error('Réponse vide');
+    const raw = data.content[0].text;
+
+    // Update last placeholder message
+    const msgs = document.getElementById('exam-chat-messages');
+    const lastMsg = msgs?.lastElementChild;
+    if (lastMsg) lastMsg.remove();
+
+    // Check for plan JSON
+    let displayText = raw;
+    const jsonMatch = raw.match(/\{"plan"\s*:\s*\[[\s\S]*?\]\s*\}/);
+    if (jsonMatch) {
+      try {
+        const planData = JSON.parse(jsonMatch[0]);
+        displayText = raw.replace(jsonMatch[0], '').trim();
+        // Place sessions in schedule
+        if (planData.plan && planData.plan.length > 0) {
+          chrome.storage.local.get(['planSchedule'], r2 => {
+            const sched = r2.planSchedule || {};
+            let placed = 0;
+            planData.plan.forEach(s => {
+              if (s.date < todayISO) return;
+              const dur = s.duration || 1;
+              for (let h = s.hour; h < s.hour+dur; h++) {
+                const key = s.date+'_'+String(h).padStart(2,'0');
+                if (!sched[key]) { sched[key]={taskName:s.label||s.subject,isRevision:true,subject:s.subject}; placed++; }
+              }
+            });
+            chrome.storage.local.set({planSchedule:sched}, ()=>{
+              addExamMessage('assistant', (displayText||'Plan créé !') + '\n\n✅ '+placed+' sessions placées dans ton planning.', false);
+            });
+          });
+          btn.disabled=false; btn.textContent='→';
+          // Save to history
+          examChatHistory.push({role:'user',content:contentBlocks.length===1&&contentBlocks[0].type==='text'?text:contentBlocks});
+          examChatHistory.push({role:'assistant',content:raw});
+          if (examChatHistory.length > 10) examChatHistory = examChatHistory.slice(-10);
+          return;
+        }
+      } catch(e) {}
+    }
+
+    addExamMessage('assistant', displayText, false);
+
+    // Save to history (text only for follow-ups)
+    examChatHistory.push({role:'user',content:text||'[fichiers]'});
+    examChatHistory.push({role:'assistant',content:raw});
+    if (examChatHistory.length > 10) examChatHistory = examChatHistory.slice(-10);
+
+  } catch(err) {
+    const msgs = document.getElementById('exam-chat-messages');
+    const lastMsg = msgs?.lastElementChild;
+    if (lastMsg) lastMsg.remove();
+    addExamMessage('assistant', 'Erreur: '+err.message);
+  }
+
+  btn.disabled=false; btn.textContent='→';
 }
 
 setInterval(() => {
