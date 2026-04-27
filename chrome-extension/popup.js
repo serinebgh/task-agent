@@ -1,1178 +1,785 @@
-// ── Helpers (définis en premier) ──────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// TASK AGENT — popup.js v3
+// Fixes: JSON truncated, EDT import, double planning, no emojis
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Helpers ───────────────────────────────────────────────────────────────
 function loadTasks(cb) { chrome.storage.local.get(['tasks'], r => cb(r.tasks || [])); }
 function saveTasks(tasks) { chrome.storage.local.set({ tasks }); }
 function getStoredKey() { return new Promise(r => chrome.storage.local.get(['apiKey'], d => r(d.apiKey || ''))); }
 function getProfile() { return new Promise(r => chrome.storage.local.get(['userProfile'], d => r(d.userProfile || null))); }
 
-// ── Onboarding ───────────────────────────────────────────────────────────────
-let currentStep = 1;
-const totalSteps = 5;
+// Date locale correcte (évite décalage UTC)
+function getTodayISO() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function formatDateLocal(date) {
+  return date.getFullYear() + '-' + String(date.getMonth()+1).padStart(2,'0') + '-' + String(date.getDate()).padStart(2,'0');
+}
+function formatHour(h) { return h === 0 ? '00h' : h + 'h'; }
 
-function showOnboarding() {
-  document.getElementById('onboarding').style.display = 'flex';
-  document.getElementById('app').style.display = 'none';
-  updateObProgress();
-  setTimeout(() => document.getElementById('ob-name')?.focus(), 100);
+// ── Double planning ───────────────────────────────────────────────────────
+// Clé de stockage selon le planning actif : 'planSchedule' (student) ou 'planSchedulePro'
+let activePlanKey = 'planSchedule'; // 'planSchedule' | 'planSchedulePro'
+
+function getScheduleKey() { return activePlanKey; }
+function saveSchedule() { chrome.storage.local.set({ [getScheduleKey()]: planState.schedule }); }
+function loadScheduleForKey(key, cb) { chrome.storage.local.get([key], r => cb(r[key] || {})); }
+
+function switchActivePlan(planType) {
+  activePlanKey = planType === 'pro' ? 'planSchedulePro' : 'planSchedule';
+  loadScheduleForKey(activePlanKey, schedule => {
+    planState.schedule = schedule;
+    planState.currentDate = new Date();
+    renderPlanning();
+  });
+  // Mettre à jour boutons
+  document.querySelectorAll('.ps-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.plan === planType);
+    b.classList.toggle('pro-plan', b.dataset.plan === 'pro');
+  });
 }
 
-function showApp() {
-  document.getElementById('onboarding').style.display = 'none';
-  document.getElementById('app').style.display = 'block';
-}
-
-function updateObProgress() {
-  const pct = ((currentStep - 1) / totalSteps) * 100;
-  document.getElementById('ob-progress-bar').style.width = pct + '%';
-  document.getElementById('ob-step-label').textContent =
-    String(currentStep).padStart(2, '0') + ' / ' + String(totalSteps).padStart(2, '0');
-
-  document.querySelectorAll('.ob-question').forEach(q => {
-    q.classList.toggle('active', parseInt(q.dataset.step) === currentStep);
-  });
-
-  document.querySelectorAll('.ob-step-dot').forEach(dot => {
-    const s = parseInt(dot.dataset.step);
-    dot.classList.toggle('active', s === currentStep);
-    dot.classList.toggle('done', s < currentStep);
-  });
-
-  const backBtn = document.getElementById('ob-back');
-  backBtn.style.visibility = currentStep > 1 ? 'visible' : 'hidden';
-  document.getElementById('ob-next').textContent =
-    currentStep === totalSteps ? 'Terminer' : 'Continuer';
-}
-
-// Chips
-document.querySelectorAll('.ob-chip').forEach(chip => {
-  chip.addEventListener('click', () => {
-    chip.classList.toggle('selected');
-    const selected = [...document.querySelectorAll('.ob-chip.selected')].map(c => c.dataset.val);
-    document.getElementById('ob-style-value').value = selected.join(', ');
-  });
+document.querySelectorAll('.ps-btn').forEach(btn => {
+  btn.addEventListener('click', () => switchActivePlan(btn.dataset.plan));
 });
 
-// Enter pour avancer
-document.querySelectorAll('.ob-input').forEach(input => {
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); goNext(); }
-  });
-});
-
-document.getElementById('ob-next').addEventListener('click', goNext);
-document.getElementById('ob-back').addEventListener('click', () => {
-  if (currentStep > 1) { currentStep--; updateObProgress(); focusActiveInput(); }
-});
-
-function focusActiveInput() {
-  setTimeout(() => {
-    const active = document.querySelector('.ob-question.active');
-    const input = active?.querySelector('input:not([type=hidden]), textarea');
-    if (input) input.focus();
-  }, 50);
+// ── Heures de travail ─────────────────────────────────────────────────────
+function buildHoursArray(start, end) {
+  const h = [];
+  if (end >= start) { for (let i = start; i <= end; i++) h.push(i); }
+  else { for (let i = start; i <= 23; i++) h.push(i); for (let i = 0; i <= end; i++) h.push(i); }
+  return h;
 }
-
-function goNext() {
-  if (currentStep === totalSteps) {
-    finishOnboarding();
-  } else {
-    currentStep++;
-    updateObProgress();
-    focusActiveInput();
-  }
-}
-
-function finishOnboarding() {
-  const profile = {
-    name: document.getElementById('ob-name').value.trim() || 'Utilisateur',
-    job: document.getElementById('ob-job').value.trim(),
-    projects: document.getElementById('ob-projects').value.trim(),
-    workStyle: document.getElementById('ob-style-value').value,
-    extra: document.getElementById('ob-extra').value.trim(),
-    createdAt: Date.now()
-  };
-  chrome.storage.local.set({ userProfile: profile, onboardingDone: true }, () => {
-    loadProfileIntoForm(profile);
-    showApp();
-    loadTasks(renderTasks);
+let _cachedWorkHours = { start: 19, end: 23, overrides: {} };
+function refreshWorkHoursCache(cb) {
+  chrome.storage.local.get(['userProfile','workHoursOverrides'], d => {
+    const p = d.userProfile || {};
+    _cachedWorkHours = { start: p.workHoursStart ?? 19, end: p.workHoursEnd ?? 23, overrides: d.workHoursOverrides || {} };
+    if (cb) cb();
   });
 }
-
-// ── Profil ───────────────────────────────────────────────────────────────────
-function loadProfileIntoForm(profile) {
-  if (!profile) return;
-  document.getElementById('p-name').value = profile.name || '';
-  document.getElementById('p-job').value = profile.job || '';
-  document.getElementById('p-projects').value = profile.projects || '';
-  document.getElementById('p-style').value = profile.workStyle || '';
-  document.getElementById('p-extra').value = profile.extra || '';
-
-  const greeting = document.getElementById('profile-greeting');
-  if (profile.name) {
-    greeting.textContent = profile.name + ' — profil actif. Claude utilise ce contexte dans toutes ses analyses.';
-    greeting.style.display = 'block';
-  } else {
-    greeting.style.display = 'none';
-  }
+function isWorkHour(dateISO, hour) {
+  const ov = _cachedWorkHours.overrides[dateISO];
+  return buildHoursArray(ov ? ov.start : _cachedWorkHours.start, ov ? ov.end : _cachedWorkHours.end).includes(hour);
 }
-
-document.getElementById('save-profile-btn').addEventListener('click', () => {
-  const profile = {
-    name: document.getElementById('p-name').value.trim(),
-    job: document.getElementById('p-job').value.trim(),
-    projects: document.getElementById('p-projects').value.trim(),
-    workStyle: document.getElementById('p-style').value.trim(),
-    extra: document.getElementById('p-extra').value.trim(),
-    updatedAt: Date.now()
-  };
-  chrome.storage.local.set({ userProfile: profile }, () => {
-    loadProfileIntoForm(profile);
-    const s = document.getElementById('profile-status');
-    s.textContent = 'Profil enregistré.';
-    setTimeout(() => { s.textContent = ''; }, 2500);
-  });
-});
-
-// ── Navigation tabs ──────────────────────────────────────────────────────────
-document.querySelectorAll('.nav-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
-    if (tab.dataset.tab === 'stats') renderStatsTab();
-    if (tab.dataset.tab === 'planning') renderRevisionGoalsPanel();
-    if (tab.dataset.tab === 'profile') renderMemoryList();
-  });
-});
-
-// ── System prompt avec profil ─────────────────────────────────────────────────
-function buildSystemPrompt(profile) {
-  const base = `Tu es un agent de gestion de tâches. Réponds UNIQUEMENT avec un JSON valide, rien d'autre.
-Actions possibles :
-- {"action": "add", "task": "nom de la tâche"}
-- {"action": "list"}
-- {"action": "done", "index": 0}
-- {"action": "unknown"}`;
-
-  if (!profile?.name) return base;
-
-  return `Tu es l'assistant personnel de ${profile.name}.
-${profile.job ? `${profile.name} travaille en tant que ${profile.job}.` : ''}
-${profile.projects ? `Projets actuels : ${profile.projects}.` : ''}
-${profile.workStyle ? `Style de travail : ${profile.workStyle}.` : ''}
-${profile.extra ? `À savoir : ${profile.extra}.` : ''}
-
-${base}
-
-Adapte le libellé des tâches au contexte de ${profile.name} si pertinent.`;
-}
-
-// ── Agent ─────────────────────────────────────────────────────────────────────
-function setStatus(msg) {
-  document.getElementById('status').textContent = msg;
-}
-
-function renderTasks(tasks) {
-  const list = document.getElementById('task-list');
-  if (!tasks.length) {
-    list.innerHTML = '<p style="color:#3d3d5c;font-size:12px;padding:8px 0">Aucune tâche pour l\'instant.</p>';
-    return;
-  }
-  const priorityDot = { high: '— ', medium: '– ', low: '· ' };
-  list.innerHTML = tasks.map((t, i) => `
-    <div class="task-item ${t.done ? 'done' : ''}" data-index="${i}">
-      <span class="check-btn">${t.done ? '✓' : '○'}</span>
-      <span>${t.priority ? priorityDot[t.priority] : ''}${t.task}</span>
-      ${t.deadline ? '<span class="deadline-tag">' + formatDeadline(t.deadline) + '</span>' : ''}
-      ${t.estimatedTime ? '<span class="time-tag">' + t.estimatedTime + '</span>' : ''}
-    </div>
-  `).join('');
-  list.querySelectorAll('.check-btn').forEach(btn => {
-    btn.addEventListener('click', () => markDone(parseInt(btn.parentElement.dataset.index)));
-  });
-}
-
-function formatDeadline(ts) {
-  const diff = ts - Date.now();
-  if (diff <= 0) return 'expiré';
-  const min = Math.floor(diff / 60000);
-  if (min < 60) return min + 'min';
-  return Math.floor(min / 60) + 'h' + (min % 60 > 0 ? (min % 60) + 'm' : '');
-}
-
-
-async function runAgent(userInput) {
-  const apiKey = document.getElementById('api-key').value || await getStoredKey();
-  if (!apiKey) { setStatus('Clé Anthropic manquante — onglet API.'); return; }
-
-  setStatus('...');
-  const profile = await getProfile();
-
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'anthropic-dangerous-direct-browser-access': 'true'
-      },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 200,
-        system: buildSystemPrompt(profile),
-        messages: [{ role: 'user', content: userInput }]
-      })
-    });
-
-    const data = await response.json();
-    if (!data.content?.[0]) { setStatus('Erreur : ' + (data.error?.message || 'réponse vide')); return; }
-
-    let raw = data.content[0].text.trim();
-    if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/, '').trim();
-    const command = JSON.parse(raw);
-
-    loadTasks(tasks => {
-      if (command.action === 'add') {
-        tasks.push({ task: command.task, done: false });
-        saveTasks(tasks);
-        setStatus('Ajouté : ' + command.task);
-      } else if (command.action === 'list') {
-        setStatus(tasks.length + ' tâche' + (tasks.length > 1 ? 's' : ''));
-      } else if (command.action === 'done') {
-        if (tasks[command.index]) {
-          tasks[command.index].done = true;
-          saveTasks(tasks);
-          setStatus('Tâche ' + command.index + ' terminée.');
-        } else {
-          setStatus('Index introuvable.');
+async function getFreeSlotsFull(schedule, weeks, fromISO) {
+  return new Promise(resolve => {
+    chrome.storage.local.get(['userProfile','workHoursOverrides'], d => {
+      const p = d.userProfile || {}; const ov = d.workHoursOverrides || {};
+      const ds = p.workHoursStart ?? 19; const de = p.workHoursEnd ?? 23;
+      const slots = []; const seen = new Set();
+      const cur = new Date(); cur.setHours(0,0,0,0);
+      const end = new Date(cur); end.setDate(end.getDate() + weeks*7);
+      while (cur < end) {
+        const iso = formatDateLocal(cur);
+        if (!fromISO || iso >= fromISO) {
+          const o = ov[iso]; const s = o ? o.start : ds; const e = o ? o.end : de;
+          buildHoursArray(s, e).forEach(h => {
+            let sd = iso;
+            if (h <= 2 && s > 12) { const nd = new Date(cur); nd.setDate(nd.getDate()+1); sd = formatDateLocal(nd); }
+            const key = sd + '_' + String(h).padStart(2,'0');
+            if (!schedule[key] && !seen.has(key)) { seen.add(key); slots.push({ date: sd, hour: h, key }); }
+          });
         }
-      } else {
-        setStatus('Commande non reconnue.');
+        cur.setDate(cur.getDate()+1);
       }
-      renderTasks(tasks);
+      resolve(slots);
     });
-  } catch (err) {
-    setStatus('Erreur : ' + err.message);
-  }
-}
-
-function markDone(index) {
-  loadTasks(tasks => {
-    tasks[index].done = !tasks[index].done;
-    saveTasks(tasks);
-    renderTasks(tasks);
   });
 }
 
+// ── Features ──────────────────────────────────────────────────────────────
+const ALL_FEATURES = [
+  { id:'planning',        label:'Planning calendrier',      desc:'Vue semaine/jour/mois',                  ds:true,  dp:true  },
+  { id:'ai_planning',     label:'Planification par Claude', desc:'Claude place les tâches automatiquement', ds:true,  dp:true  },
+  { id:'import_edt',      label:'Import emploi du temps',   desc:'PDF/image → créneaux bloqués',           ds:true,  dp:false },
+  { id:'revision_goals',  label:'Objectifs de révision',    desc:'Par matière, h/semaine, deadline',       ds:true,  dp:false },
+  { id:'stats_revision',  label:'Stats et progression',     desc:'Streak, rapport de travail',             ds:true,  dp:false },
+  { id:'pipeline',        label:'Pipeline tâches',           desc:'Kanban À faire / En cours / Terminé',   ds:false, dp:true  },
+  { id:'focus_timer',     label:'Timer focus',               desc:'Sessions de travail concentré',          ds:true,  dp:true  },
+  { id:'memory',          label:'Mémoire Claude',            desc:'Se souvient entre les sessions',         ds:true,  dp:true  },
+  { id:'double_planning', label:'Double planning',           desc:'Un planning séparé par mode',            ds:false, dp:false },
+];
+function getDefaultFeatures(mode) {
+  const f = {};
+  ALL_FEATURES.forEach(feat => { f[feat.id] = mode === 'student' ? feat.ds : feat.dp; });
+  return f;
+}
+function isFeatureOn(features, id) { return !!features?.[id]; }
 
+// ── Onglets ───────────────────────────────────────────────────────────────
+function getTabsForMode(mode, features) {
+  const tabs = [{ id:'tasks', label: mode === 'pro' ? 'Agenda' : 'Tâches' }];
+  if (isFeatureOn(features,'planning')) tabs.push({ id:'planning', label:'Planning' });
+  if (mode === 'pro' && isFeatureOn(features,'pipeline')) tabs.push({ id:'pipeline', label:'Pipeline' });
+  if (isFeatureOn(features,'stats_revision')) tabs.push({ id:'stats', label: mode === 'pro' ? 'Rapport' : 'Stats' });
+  tabs.push({ id:'profile', label:'Profil' });
+  tabs.push({ id:'keys', label:'API' });
+  return tabs;
+}
+function buildNavTabs(mode, features) {
+  const nav = document.getElementById('nav-tabs'); nav.innerHTML = '';
+  getTabsForMode(mode, features).forEach((tab, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'nav-tab' + (i === 0 ? ' active' : '');
+    btn.dataset.tab = tab.id; btn.textContent = tab.label;
+    btn.addEventListener('click', () => switchTab(tab.id));
+    nav.appendChild(btn);
+  });
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-tasks')?.classList.add('active');
+}
+function switchTab(tabId) {
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabId));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + tabId)?.classList.add('active');
+  if (tabId === 'stats') renderStatsTab();
+  if (tabId === 'planning') { renderRevisionGoalsPanel(); renderPlanning(); }
+  if (tabId === 'profile') { renderMemoryList(); renderFeaturesToggleList(); }
+}
 
-async function askToSaveMemory(userInput) {
-  const apiKey = await getStoredKey();
-  if (!apiKey) return;
-  try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 100,
-        system: "Analyse ce message et decide s'il contient une info importante a retenir pour les sessions futures. Si oui, resume en une phrase courte (max 80 chars). Si non, reponds exactement: NON",
-        messages: [{ role: 'user', content: 'Message: "' + userInput + '"' }]
-      })
+// ── Mode & thème ──────────────────────────────────────────────────────────
+function updateModeBadge(mode, dualMode) {
+  const badge = document.getElementById('app-mode-badge');
+  if (dualMode) { badge.textContent = 'Dual'; badge.className = 'dual'; }
+  else if (mode === 'pro') { badge.textContent = 'Pro'; badge.className = 'pro'; }
+  else { badge.textContent = 'Étudiant'; badge.className = 'student'; }
+  document.body.classList.toggle('mode-pro', mode === 'pro' && !dualMode);
+}
+function applyTheme(theme) {
+  document.body.classList.toggle('theme-light', theme === 'light');
+  document.querySelectorAll('.theme-pick-btn').forEach(b => b.classList.toggle('active', b.dataset.theme === theme));
+}
+document.querySelectorAll('.theme-pick-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    applyTheme(btn.dataset.theme);
+    chrome.storage.local.get(['userProfile'], d => {
+      chrome.storage.local.set({ userProfile: Object.assign({}, d.userProfile||{}, { theme: btn.dataset.theme }) });
     });
-    const data = await response.json();
-    const suggestion = data.content?.[0]?.text?.trim();
-    if (suggestion && suggestion !== 'NON' && !suggestion.startsWith('NON')) {
-      showMemoryModal(suggestion);
-    }
+  });
+});
+function updateModeButtons(mode, dualMode) {
+  document.getElementById('pms-student').className = 'pms-btn' + (mode === 'student' && !dualMode ? ' active-student' : '');
+  document.getElementById('pms-pro').className = 'pms-btn' + (mode === 'pro' && !dualMode ? ' active-pro' : '');
+  document.getElementById('pms-double-mode').checked = !!dualMode;
+}
+function applyMode(profile) {
+  const mode = profile.mode || 'student';
+  const dual = !!profile.dualMode;
+  const features = profile.features || getDefaultFeatures(mode);
+  updateModeBadge(mode, dual);
+  buildNavTabs(mode, features);
+  updateModeButtons(mode, dual);
+  applyTheme(profile.theme || 'dark');
+  // Planning switcher visible seulement en mode dual
+  const switcher = document.getElementById('planning-switcher');
+  if (switcher) switcher.style.display = dual ? '' : 'none';
+  // Import EDT visible selon feature
+  const importBtn = document.getElementById('import-schedule-btn');
+  if (importBtn) importBtn.style.display = isFeatureOn(features,'import_edt') ? '' : 'none';
+  // Révision panel
+  const revPanel = document.getElementById('revision-goals-panel');
+  if (revPanel) revPanel.style.display = (mode === 'student' && isFeatureOn(features,'revision_goals')) ? '' : 'none';
+  // Toggle label
+  const toggleLabel = document.querySelector('.plan-toggle-btn[data-filter="focus"]');
+  if (toggleLabel) toggleLabel.textContent = mode === 'student' ? 'Révisions' : 'Focus';
+  if (!dual) activePlanKey = 'planSchedule';
+}
+
+// ── Switch de mode ────────────────────────────────────────────────────────
+document.getElementById('pms-student').addEventListener('click', () => doSwitchMode('student'));
+document.getElementById('pms-pro').addEventListener('click', () => doSwitchMode('pro'));
+document.getElementById('pms-double-mode').addEventListener('change', e => {
+  chrome.storage.local.get(['userProfile'], d => {
+    const p = Object.assign({}, d.userProfile||{}, { dualMode: e.target.checked });
+    chrome.storage.local.set({ userProfile: p }, () => { applyMode(p); loadProfileIntoForm(p); });
+  });
+});
+function doSwitchMode(newMode) {
+  chrome.storage.local.get(['userProfile'], d => {
+    const p = Object.assign({}, d.userProfile||{}, { mode: newMode, features: getDefaultFeatures(newMode), dualMode: false });
+    chrome.storage.local.set({ userProfile: p }, () => {
+      applyMode(p); renderFeaturesToggleList();
+      const s = document.getElementById('profile-status');
+      s.textContent = 'Mode ' + (newMode === 'student' ? 'Étudiant' : 'Pro') + ' activé.';
+      setTimeout(() => { s.textContent = ''; }, 2500);
+    });
+  });
+}
+
+// ── Features toggles ──────────────────────────────────────────────────────
+function renderFeaturesToggleList() {
+  chrome.storage.local.get(['userProfile'], d => {
+    const p = d.userProfile||{}; const features = p.features || getDefaultFeatures(p.mode||'student');
+    const container = document.getElementById('features-toggles-list'); if (!container) return;
+    container.innerHTML = '';
+    ALL_FEATURES.forEach(feat => {
+      const row = document.createElement('div'); row.className = 'feature-toggle-row';
+      const isOn = !!features[feat.id];
+      row.innerHTML = `<div class="feature-toggle-info"><div class="feature-toggle-name">${feat.label}</div><div class="feature-toggle-desc">${feat.desc}</div></div><label class="feature-toggle-switch"><input type="checkbox" data-feat="${feat.id}" ${isOn?'checked':''}><span class="toggle-slider"></span></label>`;
+      container.appendChild(row);
+    });
+    container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        chrome.storage.local.get(['userProfile'], d2 => {
+          const p2 = d2.userProfile||{}; if (!p2.features) p2.features = getDefaultFeatures(p2.mode||'student');
+          p2.features[cb.dataset.feat] = cb.checked;
+          chrome.storage.local.set({ userProfile: p2 }, () => { buildNavTabs(p2.mode||'student', p2.features); applyMode(p2); });
+        });
+      });
+    });
+  });
+}
+
+// ── Onboarding ────────────────────────────────────────────────────────────
+let currentStep = 1; const totalSteps = 6; let detectedMode = 'student';
+function showOnboarding() { document.getElementById('onboarding').style.display='flex'; document.getElementById('app').style.display='none'; updateObProgress(); setTimeout(()=>document.getElementById('ob-name')?.focus(),100); }
+function showApp() { document.getElementById('onboarding').style.display='none'; document.getElementById('app').style.display='block'; }
+function updateObProgress() {
+  document.getElementById('ob-progress-bar').style.width = ((currentStep-1)/totalSteps*100) + '%';
+  document.getElementById('ob-step-label').textContent = String(currentStep).padStart(2,'0') + ' / ' + String(totalSteps).padStart(2,'0');
+  document.querySelectorAll('.ob-question').forEach(q => q.classList.toggle('active', parseInt(q.dataset.step)===currentStep));
+  document.querySelectorAll('.ob-step-dot').forEach(dot => { const s=parseInt(dot.dataset.step); dot.classList.toggle('active',s===currentStep); dot.classList.toggle('done',s<currentStep); });
+  document.getElementById('ob-back').style.visibility = currentStep > 1 ? 'visible' : 'hidden';
+  document.getElementById('ob-next').textContent = currentStep === totalSteps ? 'Terminer' : 'Continuer';
+}
+document.querySelectorAll('.ob-input').forEach(input => { input.addEventListener('keydown', e => { if (e.key==='Enter'&&!e.shiftKey) { e.preventDefault(); goNext(); } }); });
+document.getElementById('ob-next').addEventListener('click', goNext);
+document.getElementById('ob-back').addEventListener('click', () => { if (currentStep>1) { currentStep--; updateObProgress(); focusActiveInput(); } });
+function focusActiveInput() { setTimeout(()=>{ const a=document.querySelector('.ob-question.active'); const i=a?.querySelector('input:not([type=hidden]):not([type=date]):not([type=number]),textarea'); if(i&&i.tagName!=='SELECT') i.focus(); },50); }
+async function goNext() {
+  if (currentStep===2) { const job=document.getElementById('ob-job').value.trim(); if (job) await detectModeFromJob(job); currentStep++; updateObProgress(); renderModeCard(); return; }
+  if (currentStep===totalSteps) { finishOnboarding(); return; }
+  currentStep++; updateObProgress(); focusActiveInput();
+}
+async function detectModeFromJob(job) {
+  const sKw=['étudiant','student','lycée','université','fac','bts','prépa','iut','formation','apprenti','élève','école'];
+  const pKw=['manager','directeur','chef','ceo','responsable','freelance','consultant','entrepreneur','fondateur','ingénieur','développeur','designer','commercial','avocat','médecin','comptable','architecte','directrice'];
+  const jl=job.toLowerCase();
+  if (sKw.some(k=>jl.includes(k))) { detectedMode='student'; return; }
+  if (pKw.some(k=>jl.includes(k))) { detectedMode='pro'; return; }
+  const apiKey=await getStoredKey(); if (!apiKey) return;
+  try {
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:10,system:'Réponds uniquement "student" ou "pro". Cette situation est-elle celle d\'un étudiant ou d\'un professionnel ?',messages:[{role:'user',content:job}]})});
+    const data=await r.json(); const ans=data.content?.[0]?.text?.trim().toLowerCase()||'';
+    detectedMode=ans.includes('pro')?'pro':'student';
   } catch(e) {}
 }
-
-function showMemoryModal(suggestion) {
-  const modal = document.getElementById('memory-modal');
-  if (!modal) return;
-  document.getElementById('memory-modal-suggestion').textContent = suggestion || '';
-  document.getElementById('memory-modal-input').value = suggestion || '';
-  modal.style.display = 'flex';
-  setTimeout(() => document.getElementById('memory-modal-input')?.focus(), 100);
+function renderModeCard() {
+  const card=document.getElementById('ob-mode-card'); const title=document.getElementById('ob-mode-title'); const isPro=detectedMode==='pro';
+  title.textContent=isPro?'Mode Professionnel':'Mode Étudiant'; card.className=isPro?'mode-pro':'';
+  const features=isPro?['Agenda et planning journée','Pipeline tâches (Kanban)','Gestion de projets','Résumé de réunion par Claude','Rapport hebdomadaire']:['Import emploi du temps (PDF)','Objectifs de révision par matière','Mode Exam avec analyse de cours','Stats et streak de progression','Bilan de journée'];
+  card.innerHTML=`<div class="ob-mode-card-tag">${isPro?'Mode Pro':'Mode Étudiant'} détecté</div><div class="ob-mode-card-features">${features.map(f=>`<div class="ob-mode-card-feat"><div class="ob-mode-card-dot"></div>${f}</div>`).join('')}</div><span class="ob-mode-change" id="ob-mode-toggle">Ce n'est pas le bon mode ? Changer</span>`;
+  document.getElementById('ob-mode-toggle').addEventListener('click',()=>{ detectedMode=detectedMode==='student'?'pro':'student'; renderModeCard(); });
+}
+function finishOnboarding() {
+  const profile={ name:document.getElementById('ob-name').value.trim()||'Utilisateur', job:document.getElementById('ob-job').value.trim(), projects:document.getElementById('ob-projects').value.trim(), extra:document.getElementById('ob-extra').value.trim(), workHoursStart:parseInt(document.getElementById('ob-work-start').value), workHoursEnd:parseInt(document.getElementById('ob-work-end').value), mode:detectedMode, features:getDefaultFeatures(detectedMode), theme:'dark', createdAt:Date.now() };
+  chrome.storage.local.set({userProfile:profile,onboardingDone:true},()=>{ loadProfileIntoForm(profile); applyMode(profile); showApp(); refreshWorkHoursCache(()=>{ loadTasks(renderTasks); initPlanning(); }); });
 }
 
-function hideMemoryModal() {
-  const modal = document.getElementById('memory-modal');
-  if (modal) modal.style.display = 'none';
+// ── Profil form ───────────────────────────────────────────────────────────
+function loadProfileIntoForm(profile) {
+  if (!profile) return;
+  document.getElementById('p-name').value=profile.name||'';
+  document.getElementById('p-job').value=profile.job||'';
+  document.getElementById('p-projects').value=profile.projects||'';
+  document.getElementById('p-extra').value=profile.extra||'';
+  const ss=document.getElementById('p-work-start'); const se=document.getElementById('p-work-end');
+  if (ss&&profile.workHoursStart!==undefined) ss.value=String(profile.workHoursStart);
+  if (se&&profile.workHoursEnd!==undefined) se.value=String(profile.workHoursEnd);
+  const g=document.getElementById('profile-greeting');
+  if (g&&profile.name) { g.textContent=profile.name+' — '+(profile.mode==='pro'?'Mode Pro':'Mode Étudiant')+' · '+formatHour(profile.workHoursStart??19)+' → '+formatHour(profile.workHoursEnd??23); g.style.display='block'; }
+  updateModeButtons(profile.mode||'student', !!profile.dualMode);
 }
-
-document.getElementById('memory-modal-skip')?.addEventListener('click', hideMemoryModal);
-document.getElementById('memory-modal-save')?.addEventListener('click', () => {
-  const text = document.getElementById('memory-modal-input')?.value.trim();
-  if (text) addMemory(text);
-  hideMemoryModal();
-});
-document.getElementById('memory-modal-input')?.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('memory-modal-save')?.click(); }
-  if (e.key === 'Escape') hideMemoryModal();
-});
-
-// ── Clés API ──────────────────────────────────────────────────────────────────
-document.getElementById('save-key-btn').addEventListener('click', () => {
-  const key = document.getElementById('api-key').value.trim();
-  if (key) {
-    chrome.storage.local.set({ apiKey: key });
-    document.getElementById('keys-status').textContent = 'Clé Anthropic enregistrée.';
-    setTimeout(() => { document.getElementById('keys-status').textContent = ''; }, 2500);
-  }
-});
-
-document.getElementById('save-openai-key-btn').addEventListener('click', () => {
-  const key = document.getElementById('openai-key').value.trim();
-  if (key) {
-    chrome.storage.local.set({ openaiKey: key });
-    document.getElementById('keys-status').textContent = 'Clé OpenAI enregistrée.';
-    setTimeout(() => { document.getElementById('keys-status').textContent = ''; }, 2500);
-  }
-});
-
-document.getElementById('send-btn') && document.getElementById('send-btn').addEventListener('click', () => {
-  const input = document.getElementById('user-input');
-  if (input.value.trim()) { runAgent(input.value.trim()); input.value = ''; }
-});
-document.getElementById('user-input') && document.getElementById('user-input').addEventListener('keydown', e => {
-  if (e.key === 'Enter') document.getElementById('send-btn').click();
-});
-
-// ── Toggle bulle ──────────────────────────────────────────────────────────────
-const toggleBtn = document.getElementById('toggle-bubble-btn');
-
-function updateToggleBtn(visible) {
-  toggleBtn.textContent = visible ? 'Active' : 'Inactive';
-  toggleBtn.classList.toggle('inactive', !visible);
-}
-
-chrome.storage.local.get(['bubbleVisible'], r => updateToggleBtn(r.bubbleVisible !== false));
-
-toggleBtn.addEventListener('click', () => {
-  chrome.storage.local.get(['bubbleVisible'], r => {
-    const newVal = r.bubbleVisible === false;
-    chrome.storage.local.set({ bubbleVisible: newVal });
-    updateToggleBtn(newVal);
-    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
-      if (!tabs?.[0]?.id) return;
-      const url = tabs[0].url || '';
-      if (url.startsWith('chrome://') || url.startsWith('chrome-extension://')) return;
-      chrome.tabs.sendMessage(tabs[0].id, { type: 'toggle-bubble', visible: newVal }).catch(() => {});
-    });
+document.getElementById('save-profile-btn').addEventListener('click',()=>{
+  chrome.storage.local.get(['userProfile'],d=>{
+    const p=Object.assign({},d.userProfile||{},{name:document.getElementById('p-name').value.trim(),job:document.getElementById('p-job').value.trim(),projects:document.getElementById('p-projects').value.trim(),extra:document.getElementById('p-extra').value.trim(),workHoursStart:parseInt(document.getElementById('p-work-start').value),workHoursEnd:parseInt(document.getElementById('p-work-end').value),updatedAt:Date.now()});
+    chrome.storage.local.set({userProfile:p},()=>{ loadProfileIntoForm(p); refreshWorkHoursCache(); const s=document.getElementById('profile-status'); s.textContent='Profil enregistré.'; setTimeout(()=>{s.textContent='';},2500); });
   });
 });
 
-// ── Init ──────────────────────────────────────────────────────────────────────
-chrome.storage.local.get(['onboardingDone', 'userProfile', 'apiKey', 'openaiKey'], r => {
-  if (!r.onboardingDone) {
-    showOnboarding();
-  } else {
-    showApp();
-    loadProfileIntoForm(r.userProfile);
-    loadTasks(renderTasks);
-    initPlanning();
-    renderRevisionGoalsPanel();
-    if (r.apiKey) document.getElementById('api-key').value = r.apiKey;
-    if (r.openaiKey) document.getElementById('openai-key').value = r.openaiKey;
+// ── Init ──────────────────────────────────────────────────────────────────
+chrome.storage.local.get(['onboardingDone','userProfile','apiKey','openaiKey'],r=>{
+  if (!r.onboardingDone) { showOnboarding(); }
+  else {
+    showApp(); const profile=r.userProfile||{};
+    loadProfileIntoForm(profile); applyMode(profile);
+    refreshWorkHoursCache(()=>{ loadTasks(renderTasks); initPlanning(); renderRevisionGoalsPanel(); });
+    if (r.apiKey) document.getElementById('api-key').value=r.apiKey;
+    if (r.openaiKey) document.getElementById('openai-key').value=r.openaiKey;
   }
 });
 
+// ── Tasks ─────────────────────────────────────────────────────────────────
+function setStatus(msg) { const el=document.getElementById('status'); if(el) el.textContent=msg; }
+function renderTasks(tasks) {
+  const list=document.getElementById('task-list');
+  if (!tasks.length) { list.innerHTML='<p style="color:var(--text3);font-size:12px;padding:8px 0">Aucune tâche pour l\'instant.</p>'; return; }
+  const pm={high:'— ',medium:'– ',low:'· '};
+  list.innerHTML=tasks.map((t,i)=>`<div class="task-item ${t.done?'done':''}" data-index="${i}"><span class="check-btn">${t.done?'✓':'○'}</span><span>${t.priority?pm[t.priority]:''}${t.task}</span>${t.deadline?`<span class="deadline-tag">${fmtDL(t.deadline)}</span>`:''}</div>`).join('');
+  list.querySelectorAll('.check-btn').forEach(btn=>{ btn.addEventListener('click',()=>markDone(parseInt(btn.parentElement.dataset.index))); });
+}
+function fmtDL(ts) { const d=ts-Date.now(); if(d<=0) return 'expiré'; const m=Math.floor(d/60000); if(m<60) return m+'min'; return Math.floor(m/60)+'h'+(m%60>0?m%60+'m':''); }
+function markDone(i) { loadTasks(tasks=>{ tasks[i].done=!tasks[i].done; saveTasks(tasks); renderTasks(tasks); }); }
 
-// ── PLANNING ──────────────────────────────────────────────────────────────────
-const HOURS_START = 7;
-const HOURS_END = 24;
-// Work hours for scheduling: 19h-01h
-const WORK_HOURS_START = 19;
-const WORK_HOURS_END_NEXT = 2; // goes to 02h next day
-const DAYS = ['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
-let planState = { view:'week', currentDate:new Date(), schedule:{} };
+// ── Agent ─────────────────────────────────────────────────────────────────
+async function runAgent(userInput) {
+  const apiKey=await getStoredKey(); if (!apiKey) { setStatus('Clé API manquante.'); return; }
+  setStatus('...'); const profile=await getProfile(); const memCtx=await getMemoryContext();
+  const today=getTodayISO(); const mode=profile?.mode||'student';
+  let pCtx=profile?.name?'Assistant de '+profile.name+(profile.job?', '+profile.job:'')+'.':'';
+  if (memCtx) pCtx+=memCtx;
+  const SYS=pCtx+' Aujourd hui:'+today+'. JSON uniquement. Format:{"action":"add_task|add_event|add_both|list|done|unknown","task":"nom","event":{"name":"...","date":"YYYY-MM-DD","hour":9,"duration_hours":1},"reply":"phrase courte","ask_docs":false}';
+  try {
+    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:300,system:SYS,messages:[{role:'user',content:userInput}]})});
+    const data=await r.json(); if (!data.content?.[0]) { setStatus('Erreur'); return; }
+    let raw=data.content[0].text.trim(); if(raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
+    const cmd=JSON.parse(raw);
+    if ((cmd.action==='add_event'||cmd.action==='add_both')&&cmd.event) {
+      const ev=cmd.event;
+      if (ev.date&&ev.hour!==undefined) { const dur=ev.duration_hours||1; for(let h=ev.hour;h<ev.hour+dur;h++) planState.schedule[ev.date+'_'+String(h).padStart(2,'0')]={taskName:ev.name,isEvent:true}; saveSchedule(); }
+    }
+    if ((cmd.action==='add_task'||cmd.action==='add_both')&&cmd.task) loadTasks(tasks=>{tasks.push({task:cmd.task,done:false,priority:'medium'});saveTasks(tasks);renderTasks(tasks);});
+    if (cmd.action==='list') loadTasks(tasks=>{setStatus(tasks.length+' tâche(s)');renderTasks(tasks);});
+    if (cmd.reply&&cmd.action!=='list') setStatus(cmd.reply);
+    if (cmd.ask_docs) setTimeout(()=>showAskDocsModal(cmd.event?.name||cmd.task),1500);
+    if (userInput.length>20) askToSaveMemory(userInput);
+  } catch(err) { setStatus('Erreur: '+err.message); }
+}
+document.getElementById('send-btn')?.addEventListener('click',()=>{ const i=document.getElementById('user-input'); if(i.value.trim()){runAgent(i.value.trim());i.value='';} });
+document.getElementById('user-input')?.addEventListener('keydown',e=>{ if(e.key==='Enter') document.getElementById('send-btn').click(); });
+
+// ── API keys ──────────────────────────────────────────────────────────────
+document.getElementById('save-key-btn').addEventListener('click',()=>{ const k=document.getElementById('api-key').value.trim(); if(k){chrome.storage.local.set({apiKey:k});document.getElementById('keys-status').textContent='Clé Anthropic enregistrée.';setTimeout(()=>{document.getElementById('keys-status').textContent='';},2500);} });
+document.getElementById('save-openai-key-btn').addEventListener('click',()=>{ const k=document.getElementById('openai-key').value.trim(); if(k){chrome.storage.local.set({openaiKey:k});document.getElementById('keys-status').textContent='Clé OpenAI enregistrée.';setTimeout(()=>{document.getElementById('keys-status').textContent='';},2500);} });
+const toggleBtn=document.getElementById('toggle-bubble-btn');
+function updateToggleBtn(v){toggleBtn.textContent=v?'Active':'Inactive';toggleBtn.classList.toggle('inactive',!v);}
+chrome.storage.local.get(['bubbleVisible'],r=>updateToggleBtn(r.bubbleVisible!==false));
+toggleBtn.addEventListener('click',()=>{ chrome.storage.local.get(['bubbleVisible'],r=>{ const nv=r.bubbleVisible===false; chrome.storage.local.set({bubbleVisible:nv}); updateToggleBtn(nv); chrome.tabs.query({active:true,currentWindow:true},tabs=>{ if(!tabs?.[0]?.id) return; const url=tabs[0].url||''; if(url.startsWith('chrome://')||url.startsWith('chrome-extension://')) return; chrome.tabs.sendMessage(tabs[0].id,{type:'toggle-bubble',visible:nv}).catch(()=>{}); }); }); });
+
+// ══════════════════════════════════════════════════════════════════════════
+// PLANNING
+// ══════════════════════════════════════════════════════════════════════════
+const HOURS_START=7; const HOURS_END=24;
+const DAYS=['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'];
+let planState={view:'week',currentDate:new Date(),schedule:{}};
+let planFilter='all';
 
 function initPlanning() {
-  chrome.storage.local.get(['planSchedule'], r => { planState.schedule = r.planSchedule || {}; renderPlanning(); });
+  chrome.storage.local.get([activePlanKey],r=>{ planState.schedule=r[activePlanKey]||{}; renderPlanning(); });
 }
-function saveSchedule() { chrome.storage.local.set({ planSchedule: planState.schedule }); }
-function getWeekStart(date) {
-  const d = new Date(date); const day = d.getDay();
-  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day)); d.setHours(0,0,0,0); return d;
-}
-function formatDate(date) { return date.toISOString().slice(0,10); }
-function formatWeekLabel(ws) {
-  const e = new Date(ws); e.setDate(e.getDate()+6); const o={day:'numeric',month:'short'};
-  return ws.toLocaleDateString('fr-FR',o) + ' - ' + e.toLocaleDateString('fr-FR',o);
-}
+function getWeekStart(date) { const d=new Date(date); const day=d.getDay(); d.setDate(d.getDate()+(day===0?-6:1-day)); d.setHours(0,0,0,0); return d; }
+function formatWeekLabel(ws) { const e=new Date(ws); e.setDate(e.getDate()+6); const o={day:'numeric',month:'short'}; return ws.toLocaleDateString('fr-FR',o)+' - '+e.toLocaleDateString('fr-FR',o); }
+
 function renderPlanning() {
   if (!document.getElementById('planning-grid')) return;
-  if (planState.view==='week') renderWeekView();
-  else if (planState.view==='day') renderDayView();
-  else renderMonthView();
-  renderUnscheduledTasks();
+  refreshWorkHoursCache(()=>{
+    if (planState.view==='week') renderWeekView();
+    else if (planState.view==='day') renderDayView();
+    else renderMonthView();
+    renderUnscheduledTasks();
+  });
 }
-function makeCellTask(key) {
-  const s = planState.schedule[key]; if (!s) return null;
-  const div = document.createElement('div');
-  div.className = 'cell-task' + (s.isEvent?' is-event':s.isBlocked?' is-blocked':'');
-  div.draggable = !s.isBlocked && !s.isEvent; div.dataset.key = key;
-  const ns = document.createElement('span'); ns.className='cell-task-name'; ns.textContent=s.taskName; div.appendChild(ns);
-  if (!s.isBlocked) {
-    const rs = document.createElement('span'); rs.className='cell-task-remove'; rs.textContent='x';
-    rs.addEventListener('click', () => { delete planState.schedule[key]; saveSchedule(); renderPlanning(); });
-    div.appendChild(rs);
+
+// Toggle Tout / Révisions
+document.querySelectorAll('.plan-toggle-btn').forEach(btn=>{ btn.addEventListener('click',()=>{ planFilter=btn.dataset.filter; document.querySelectorAll('.plan-toggle-btn').forEach(b=>b.classList.toggle('active',b.dataset.filter===planFilter)); renderPlanning(); }); });
+
+// ── Blocs fusionnés ───────────────────────────────────────────────────────
+function buildBlocks(dateISO) {
+  const blocks=new Map(); const processed=new Set();
+  for (let h=HOURS_START;h<HOURS_END;h++) {
+    const key=dateISO+'_'+String(h).padStart(2,'0');
+    if (processed.has(key)) continue;
+    const s=planState.schedule[key]; if (!s) continue;
+    if (planFilter==='revisions'&&!s.isRevision&&!s.isEvent&&!s.isBlocked) continue;
+    let span=1;
+    for (let nh=h+1;nh<HOURS_END;nh++) {
+      const nk=dateISO+'_'+String(nh).padStart(2,'0'); const ns=planState.schedule[nk];
+      if (!ns||ns.taskName!==s.taskName) break;
+      if (!!ns.isBlocked!==!!s.isBlocked||!!ns.isEvent!==!!s.isEvent||!!ns.isRevision!==!!s.isRevision) break;
+      span++; processed.add(nk);
+    }
+    processed.add(key); blocks.set(key,{item:s,span,startHour:h});
   }
-  if (!s.isBlocked && !s.isEvent) {
-    div.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', JSON.stringify(Object.assign({}, planState.schedule[key], {fromKey:key}))); });
-  }
-  return div;
+  return blocks;
 }
-function makeDroppable(cell, key) {
-  cell.addEventListener('dragover', e => { e.preventDefault(); cell.classList.add('drag-over'); });
-  cell.addEventListener('dragleave', () => cell.classList.remove('drag-over'));
-  cell.addEventListener('drop', e => {
+function getBlockClass(item) { if(item.isBlocked) return 'type-cours'; if(item.isEvent) return 'type-event'; if(item.isRevision) return 'type-revision'; return 'type-task'; }
+function getBlockTypeLabel(item) { if(item.isBlocked) return 'cours'; if(item.isEvent) return 'événement'; if(item.isRevision) return 'révision'; return 'tâche'; }
+
+function makeBlock(key,item,span) {
+  const CELL_H=32; const block=document.createElement('div');
+  block.className='cell-block '+getBlockClass(item);
+  block.style.height=(span*CELL_H-3)+'px';
+  block.draggable=!item.isBlocked&&!item.isEvent;
+  block.title=item.taskName;
+  const nameEl=document.createElement('div'); nameEl.className='cell-block-name'; nameEl.textContent=item.taskName; block.appendChild(nameEl);
+  if (span>=2) { const typeEl=document.createElement('div'); typeEl.className='cell-block-type'; typeEl.textContent=getBlockTypeLabel(item); block.appendChild(typeEl); }
+  if (!item.isBlocked) { const rm=document.createElement('span'); rm.className='cell-block-remove'; rm.textContent='×'; rm.addEventListener('click',e=>{e.stopPropagation();deleteBlock(key,item,span);}); block.appendChild(rm); }
+  if (!item.isBlocked&&!item.isEvent) { block.addEventListener('dragstart',e=>{e.dataTransfer.setData('text/plain',JSON.stringify(Object.assign({},item,{fromKey:key,span})));});}
+  return block;
+}
+function deleteBlock(startKey,item,span) {
+  const dateISO=startKey.split('_')[0]; const startH=parseInt(startKey.split('_')[1]);
+  for(let h=startH;h<startH+span;h++) delete planState.schedule[dateISO+'_'+String(h).padStart(2,'0')];
+  saveSchedule(); renderPlanning();
+}
+function makeDroppable(cell,key) {
+  cell.addEventListener('dragover',e=>{e.preventDefault();cell.classList.add('drag-over');});
+  cell.addEventListener('dragleave',()=>cell.classList.remove('drag-over'));
+  cell.addEventListener('drop',e=>{
     e.preventDefault(); cell.classList.remove('drag-over');
     try {
-      const d = JSON.parse(e.dataTransfer.getData('text/plain') || '{}');
-      if (d.taskName) { if (d.fromKey) delete planState.schedule[d.fromKey]; planState.schedule[key]={taskName:d.taskName,taskIndex:d.taskIndex}; saveSchedule(); renderPlanning(); }
-    } catch(err) {}
+      const d=JSON.parse(e.dataTransfer.getData('text/plain')||'{}'); if(!d.taskName) return;
+      const dateISO=key.split('_')[0]; const startH=parseInt(key.split('_')[1]); const span=d.span||1;
+      if(d.fromKey){const fD=d.fromKey.split('_')[0];const fH=parseInt(d.fromKey.split('_')[1]);for(let h=fH;h<fH+span;h++) delete planState.schedule[fD+'_'+String(h).padStart(2,'0')];}
+      for(let h=startH;h<startH+span;h++) planState.schedule[dateISO+'_'+String(h).padStart(2,'0')]={taskName:d.taskName,isEvent:d.isEvent,isRevision:d.isRevision,isTask:d.isTask,subject:d.subject};
+      saveSchedule(); renderPlanning();
+    } catch(err){}
   });
 }
+
 function renderWeekView() {
-  const ws = getWeekStart(planState.currentDate);
-  const lbl = document.getElementById('plan-week-label'); if (lbl) lbl.textContent = formatWeekLabel(ws);
-  const grid = document.getElementById('planning-grid'); if (!grid) return;
-  grid.innerHTML = ''; grid.className = 'grid-week';
-  const hdr = document.createElement('div'); hdr.className='grid-header';
-  const tc = document.createElement('div'); tc.className='grid-time-col'; hdr.appendChild(tc);
-  DAYS.forEach((d,i) => {
-    const date = new Date(ws); date.setDate(date.getDate()+i);
-    const today = formatDate(new Date()) === formatDate(date);
-    const col = document.createElement('div'); col.className='grid-day-col'+(today?' today':''); col.textContent=d;
-    const ds = document.createElement('span'); ds.className='grid-date'; ds.textContent=date.getDate(); col.appendChild(ds); hdr.appendChild(col);
-  });
+  const ws=getWeekStart(planState.currentDate);
+  const lbl=document.getElementById('plan-week-label'); if(lbl) lbl.textContent=formatWeekLabel(ws);
+  const grid=document.getElementById('planning-grid'); if(!grid) return;
+  grid.innerHTML=''; grid.className='grid-week';
+  const hdr=document.createElement('div'); hdr.className='grid-header';
+  const th=document.createElement('div'); th.className='grid-time-col'; hdr.appendChild(th);
+  DAYS.forEach((d,i)=>{ const date=new Date(ws); date.setDate(date.getDate()+i); const today=getTodayISO()===formatDateLocal(date); const col=document.createElement('div'); col.className='grid-day-col'+(today?' today':''); col.textContent=d; const ds=document.createElement('span'); ds.className='grid-date'; ds.textContent=date.getDate(); col.appendChild(ds); hdr.appendChild(col); });
   grid.appendChild(hdr);
-  for (let h=HOURS_START; h<HOURS_END; h++) {
-    const row = document.createElement('div'); row.className='grid-row';
-    const tc2 = document.createElement('div'); tc2.className='grid-time-col'; tc2.textContent=h+'h'; row.appendChild(tc2);
-    DAYS.forEach((d,i) => {
-      const date = new Date(ws); date.setDate(date.getDate()+i);
-      const key = formatDate(date)+'_'+String(h).padStart(2,'0');
-      const s = planState.schedule[key];
-      const cell = document.createElement('div');
-      cell.className = 'grid-cell'+(s?(s.isBlocked?' is-blocked-cell':s.isEvent?' is-event-cell':' has-task'):'');
-      cell.dataset.key = key;
-      if (s) { const te = makeCellTask(key); if (te) cell.appendChild(te); }
-      if (!s || !s.isBlocked) makeDroppable(cell, key);
+  const colBlocks=DAYS.map((_,i)=>{const date=new Date(ws);date.setDate(date.getDate()+i);return buildBlocks(formatDateLocal(date));});
+  const colCont=DAYS.map(()=>new Set());
+  colBlocks.forEach((blocks,i)=>{ blocks.forEach(({span,startHour})=>{for(let s=1;s<span;s++) colCont[i].add(startHour+s);}); });
+  for(let h=HOURS_START;h<HOURS_END;h++) {
+    const row=document.createElement('div'); row.className='grid-row';
+    const tc=document.createElement('div'); tc.className='grid-time-col'; tc.textContent=h+'h'; row.appendChild(tc);
+    DAYS.forEach((_,i)=>{
+      const date=new Date(ws); date.setDate(date.getDate()+i); const dateISO=formatDateLocal(date);
+      const key=dateISO+'_'+String(h).padStart(2,'0'); const s=planState.schedule[key];
+      const workH=isWorkHour(dateISO,h); const isCont=colCont[i].has(h);
+      const cell=document.createElement('div');
+      let cls='grid-cell';
+      if(isCont) cls+=' block-continuation';
+      else if(!s&&workH) cls+=' work-hour-free';
+      else if(s?.isBlocked) cls+=' is-blocked-cell';
+      else if(s?.isEvent) cls+=' is-event-cell';
+      else if(s?.isRevision) cls+=' is-revision-cell';
+      else if(s) cls+=' has-task';
+      cell.className=cls; cell.dataset.key=key;
+      if(!isCont&&colBlocks[i].has(key)){const{item,span}=colBlocks[i].get(key);cell.appendChild(makeBlock(key,item,span));}
+      if(!s||!s.isBlocked) makeDroppable(cell,key);
       row.appendChild(cell);
     });
     grid.appendChild(row);
   }
 }
 function renderDayView() {
-  const date = planState.currentDate;
-  const lbl = document.getElementById('plan-week-label'); if (lbl) lbl.textContent = date.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
-  const grid = document.getElementById('planning-grid'); if (!grid) return;
-  grid.innerHTML = ''; grid.className = 'grid-day';
-  for (let h=HOURS_START; h<HOURS_END; h++) {
-    const key = formatDate(date)+'_'+String(h).padStart(2,'0');
-    const row = document.createElement('div'); row.className='grid-row';
-    const tc = document.createElement('div'); tc.className='grid-time-col'; tc.textContent=h+'h';
-    const s = planState.schedule[key];
-    const cell = document.createElement('div');
-    cell.className='grid-cell grid-cell-day'+(s?(s.isBlocked?' is-blocked-cell':s.isEvent?' is-event-cell':' has-task'):'');
-    cell.dataset.key=key;
-    if (s) { const te=makeCellTask(key); if (te) cell.appendChild(te); }
-    if (!s || !s.isBlocked) makeDroppable(cell, key);
+  const dateISO=formatDateLocal(planState.currentDate);
+  const lbl=document.getElementById('plan-week-label'); if(lbl) lbl.textContent=planState.currentDate.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'});
+  const grid=document.getElementById('planning-grid'); if(!grid) return;
+  grid.innerHTML=''; grid.className='grid-day';
+  const blocks=buildBlocks(dateISO); const cont=new Set();
+  blocks.forEach(({span,startHour})=>{for(let s=1;s<span;s++) cont.add(startHour+s);});
+  for(let h=HOURS_START;h<HOURS_END;h++) {
+    const key=dateISO+'_'+String(h).padStart(2,'0'); const s=planState.schedule[key]; const workH=isWorkHour(dateISO,h); const isCont=cont.has(h);
+    const row=document.createElement('div'); row.className='grid-row';
+    const tc=document.createElement('div'); tc.className='grid-time-col'; tc.textContent=h+'h';
+    const cell=document.createElement('div');
+    let cls='grid-cell grid-cell-day';
+    if(isCont) cls+=' block-continuation';
+    else if(!s&&workH) cls+=' work-hour-free';
+    else if(s?.isBlocked) cls+=' is-blocked-cell';
+    else if(s?.isEvent) cls+=' is-event-cell';
+    else if(s?.isRevision) cls+=' is-revision-cell';
+    else if(s) cls+=' has-task';
+    cell.className=cls; cell.dataset.key=key;
+    if(!isCont&&blocks.has(key)){const{item,span}=blocks.get(key);cell.appendChild(makeBlock(key,item,span));}
+    if(!s||!s.isBlocked) makeDroppable(cell,key);
     row.appendChild(tc); row.appendChild(cell); grid.appendChild(row);
   }
 }
 function renderMonthView() {
-  const date = planState.currentDate; const year=date.getFullYear(); const month=date.getMonth();
-  const lbl = document.getElementById('plan-week-label'); if (lbl) lbl.textContent=date.toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
-  const grid = document.getElementById('planning-grid'); if (!grid) return;
+  const date=planState.currentDate; const year=date.getFullYear(); const month=date.getMonth();
+  const lbl=document.getElementById('plan-week-label'); if(lbl) lbl.textContent=date.toLocaleDateString('fr-FR',{month:'long',year:'numeric'});
+  const grid=document.getElementById('planning-grid'); if(!grid) return;
   grid.innerHTML=''; grid.className='grid-month';
-  DAYS.forEach(d => { const h=document.createElement('div'); h.className='month-day-header'; h.textContent=d; grid.appendChild(h); });
-  const fd=new Date(year,month,1); const so=(fd.getDay()===0?6:fd.getDay()-1); const dim=new Date(year,month+1,0).getDate();
-  for (let i=0;i<so;i++) { const e=document.createElement('div'); e.className='month-cell empty'; grid.appendChild(e); }
-  for (let d=1;d<=dim;d++) {
-    const cd=new Date(year,month,d); const ds=formatDate(cd); const isT=ds===formatDate(new Date());
+  DAYS.forEach(d=>{const h=document.createElement('div');h.className='month-day-header';h.textContent=d;grid.appendChild(h);});
+  const fd=new Date(year,month,1); const so=fd.getDay()===0?6:fd.getDay()-1; const dim=new Date(year,month+1,0).getDate();
+  for(let i=0;i<so;i++){const e=document.createElement('div');e.className='month-cell empty';grid.appendChild(e);}
+  for(let d=1;d<=dim;d++){
+    const cd=new Date(year,month,d); const ds=formatDateLocal(cd); const isT=ds===getTodayISO();
     const cell=document.createElement('div'); cell.className='month-cell'+(isT?' today':'');
     const dk=Object.keys(planState.schedule).filter(k=>k.startsWith(ds));
     const ns=document.createElement('span'); ns.className='month-day-num'; ns.textContent=d; cell.appendChild(ns);
-    if (dk.length>0) { const cs=document.createElement('span'); cs.className='month-task-count'; cs.textContent=dk.length; cell.appendChild(cs); }
-    cell.addEventListener('click', () => { planState.currentDate=cd; planState.view='day'; document.querySelectorAll('.view-tab').forEach(t=>t.classList.toggle('active',t.dataset.view==='day')); renderPlanning(); });
+    if(dk.length>0){const cs=document.createElement('span');cs.className='month-task-count';cs.textContent=dk.length;cell.appendChild(cs);}
+    cell.addEventListener('click',()=>{planState.currentDate=cd;planState.view='day';document.querySelectorAll('.view-tab').forEach(t=>t.classList.toggle('active',t.dataset.view==='day'));renderPlanning();});
     grid.appendChild(cell);
   }
 }
 function renderUnscheduledTasks() {
-  loadTasks(tasks => {
-    const div = document.getElementById('unscheduled-tasks'); if (!div) return;
-    const pending = tasks.filter(function(t){return !t.done;});
-    if (!pending.length) { div.innerHTML='<p class="no-tasks">Aucune tache.</p>'; return; }
-    const pm = {high:'!',medium:'-',low:'.'};
-    div.innerHTML = pending.map((t,i) => {
-      const mark=t.priority?pm[t.priority]:'.'; const name=t.task.trim();
-      return '<div class="sidebar-task" draggable="true" data-index="'+i+'" data-name="'+name.replace(/"/g,'&quot;')+'">' +
-        '<span class="sidebar-task-mark '+(t.priority||'')+'">'+mark+'</span>' +
-        '<span class="sidebar-task-name">'+name+'</span>' +
-        (t.estimatedTime?'<span class="sidebar-task-time">'+t.estimatedTime+'</span>':'') + '</div>';
-    }).join('');
-    div.querySelectorAll('.sidebar-task').forEach(el => {
-      el.addEventListener('dragstart', e => { e.dataTransfer.setData('text/plain', JSON.stringify({taskName:el.dataset.name,taskIndex:parseInt(el.dataset.index)})); el.classList.add('dragging'); });
-      el.addEventListener('dragend', () => el.classList.remove('dragging'));
-    });
-  });
-}
-document.getElementById('plan-prev') && document.getElementById('plan-prev').addEventListener('click', () => {
-  if (planState.view==='week') planState.currentDate.setDate(planState.currentDate.getDate()-7);
-  else if (planState.view==='day') planState.currentDate.setDate(planState.currentDate.getDate()-1);
-  else planState.currentDate.setMonth(planState.currentDate.getMonth()-1);
-  renderPlanning();
-});
-document.getElementById('plan-next') && document.getElementById('plan-next').addEventListener('click', () => {
-  if (planState.view==='week') planState.currentDate.setDate(planState.currentDate.getDate()+7);
-  else if (planState.view==='day') planState.currentDate.setDate(planState.currentDate.getDate()+1);
-  else planState.currentDate.setMonth(planState.currentDate.getMonth()+1);
-  renderPlanning();
-});
-document.querySelectorAll('.view-tab').forEach(tab => {
-  tab.addEventListener('click', () => { planState.view=tab.dataset.view; document.querySelectorAll('.view-tab').forEach(t=>t.classList.toggle('active',t.dataset.view===planState.view)); renderPlanning(); });
-});
-document.getElementById('plan-ai-btn') && document.getElementById('plan-ai-btn').addEventListener('click', planWithClaudeOrSmart);
-
-async function planWithClaude() {
-  const btn=document.getElementById('plan-ai-btn'); const st=document.getElementById('plan-ai-status');
-  btn.disabled=true; btn.textContent='...'; st.textContent='Claude organise...';
-  const apiKey=await getStoredKey(); if (!apiKey) { st.textContent='Cle manquante.'; btn.disabled=false; btn.textContent='Planifier avec Claude'; return; }
-  const profile=await getProfile(); const ws=getWeekStart(planState.currentDate);
-  loadTasks(async tasks => {
-    const pending=tasks.filter(function(t){return !t.done;});
-    if (!pending.length) { st.textContent='Aucune tache.'; btn.disabled=false; btn.textContent='Planifier avec Claude'; return; }
-    const weekDays=DAYS.map((d,i)=>{const date=new Date(ws);date.setDate(date.getDate()+i);return formatDate(date);});
-    const tl=pending.map((t,i)=>i+'. "'+t.task.trim()+'" priorite:'+(t.priority||'medium')+(t.estimatedTime?' duree:'+t.estimatedTime:'')).join('; ');
-    const bl=Object.entries(planState.schedule).filter(([k,v])=>v.isBlocked||v.isEvent).map(([k,v])=>k+'('+v.taskName+')').join(', ');
-    const pCtx=profile?'Profil:'+profile.name+(profile.job?','+profile.job:'')+(profile.workStyle?' style:'+profile.workStyle:''):'';
-    const SYS='Tu es assistant planification. JSON uniquement. Format:{"schedule":[{"date":"YYYY-MM-DD","hour":9,"taskIndex":0,"taskName":"..."}]} Regles: heures '+HOURS_START+'h-'+(HOURS_END-1)+'h, jours '+weekDays.join(',')+', max 1/creneau, high en premier, max 6/jour, eviter:'+bl;
-    try {
-      const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1000,system:SYS,messages:[{role:'user',content:pCtx+' Taches:'+tl}]})});
-      const data=await r.json(); if (!data.content||!data.content[0]) throw new Error('vide');
-      let raw=data.content[0].text.trim(); if (raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
-      const parsed=JSON.parse(raw); let placed=0;
-      parsed.schedule.forEach(item=>{const key=item.date+'_'+String(item.hour).padStart(2,'0');if(!planState.schedule[key]){planState.schedule[key]={taskName:item.taskName,taskIndex:item.taskIndex};placed++;}});
-      saveSchedule(); renderPlanning();
-      st.textContent=placed+' tache'+(placed>1?'s':'')+' placee'+(placed>1?'s':'')+'.';
-      setTimeout(()=>{st.textContent='';},3000);
-    } catch(err) { st.textContent='Erreur:'+err.message; }
-    btn.disabled=false; btn.textContent='Planifier avec Claude';
+  loadTasks(tasks=>{
+    const div=document.getElementById('unscheduled-tasks'); if(!div) return;
+    const pending=tasks.filter(t=>!t.done);
+    if(!pending.length){div.innerHTML='<p class="no-tasks">Aucune tâche.</p>';return;}
+    const pm={high:'!',medium:'-',low:'·'};
+    div.innerHTML=pending.map((t,i)=>`<div class="sidebar-task" draggable="true" data-index="${i}" data-name="${t.task.trim().replace(/"/g,'&quot;')}"><span class="sidebar-task-mark ${t.priority||''}">${pm[t.priority]||'-'}</span><span class="sidebar-task-name">${t.task.trim()}</span></div>`).join('');
+    div.querySelectorAll('.sidebar-task').forEach(el=>{el.addEventListener('dragstart',e=>{e.dataTransfer.setData('text/plain',JSON.stringify({taskName:el.dataset.name,taskIndex:parseInt(el.dataset.index)}));el.classList.add('dragging');});el.addEventListener('dragend',()=>el.classList.remove('dragging'));});
   });
 }
 
-// Import emploi du temps
+document.getElementById('plan-prev')?.addEventListener('click',()=>{if(planState.view==='week')planState.currentDate.setDate(planState.currentDate.getDate()-7);else if(planState.view==='day')planState.currentDate.setDate(planState.currentDate.getDate()-1);else planState.currentDate.setMonth(planState.currentDate.getMonth()-1);renderPlanning();});
+document.getElementById('plan-next')?.addEventListener('click',()=>{if(planState.view==='week')planState.currentDate.setDate(planState.currentDate.getDate()+7);else if(planState.view==='day')planState.currentDate.setDate(planState.currentDate.getDate()+1);else planState.currentDate.setMonth(planState.currentDate.getMonth()+1);renderPlanning();});
+document.querySelectorAll('.view-tab').forEach(tab=>{tab.addEventListener('click',()=>{planState.view=tab.dataset.view;document.querySelectorAll('.view-tab').forEach(t=>t.classList.toggle('active',t.dataset.view===planState.view));renderPlanning();});});
+document.getElementById('plan-ai-btn')?.addEventListener('click',planWithClaudeOrSmart);
 
+// ── Adapt hours modal ─────────────────────────────────────────────────────
+document.getElementById('adapt-hours-btn')?.addEventListener('click',openAdaptHoursModal);
+function openAdaptHoursModal(){chrome.storage.local.get(['userProfile'],d=>{const p=d.userProfile||{};const s=p.workHoursStart??19;const e=p.workHoursEnd??23;document.getElementById('adapt-hours-default').textContent=formatHour(s)+' → '+formatHour(e);document.getElementById('adapt-start').value=String(s);document.getElementById('adapt-end').value=String(e);document.getElementById('adapt-days').value='1';updateAdaptPreview();document.getElementById('adapt-hours-modal').style.display='flex';});}
+function updateAdaptPreview(){const days=parseInt(document.getElementById('adapt-days').value)||1;const s=parseInt(document.getElementById('adapt-start').value);const e=parseInt(document.getElementById('adapt-end').value);const now=new Date();const labels=[];for(let i=0;i<Math.min(days,3);i++){const d=new Date(now);d.setDate(now.getDate()+i);labels.push(d.toLocaleDateString('fr-FR',{weekday:'short',day:'numeric'}));}document.getElementById('adapt-scope-preview').textContent=labels.join(', ')+(days>3?' + '+(days-3)+' autres':'')+' — '+formatHour(s)+' → '+formatHour(e);}
+document.getElementById('adapt-days')?.addEventListener('input',updateAdaptPreview);
+document.getElementById('adapt-start')?.addEventListener('change',updateAdaptPreview);
+document.getElementById('adapt-end')?.addEventListener('change',updateAdaptPreview);
+document.getElementById('adapt-hours-cancel')?.addEventListener('click',()=>{document.getElementById('adapt-hours-modal').style.display='none';});
+document.getElementById('adapt-hours-save')?.addEventListener('click',()=>{
+  const ns=parseInt(document.getElementById('adapt-start').value);const ne=parseInt(document.getElementById('adapt-end').value);const days=parseInt(document.getElementById('adapt-days').value)||1;
+  chrome.storage.local.get(['workHoursOverrides'],d=>{const ov=d.workHoursOverrides||{};const now=new Date();for(let i=0;i<days;i++){const dt=new Date(now);dt.setDate(now.getDate()+i);ov[formatDateLocal(dt)]={start:ns,end:ne};}chrome.storage.local.set({workHoursOverrides:ov},()=>{document.getElementById('adapt-hours-modal').style.display='none';const st=document.getElementById('plan-ai-status');if(st){st.textContent='Heures adaptées pour '+days+' jour(s).';setTimeout(()=>{st.textContent='';},3000);}refreshWorkHoursCache(()=>{renderPlanning();setTimeout(()=>planWithClaudeOrSmart(),500);});});});
+});
+document.getElementById('adapt-hours-modal')?.addEventListener('click',e=>{if(e.target===document.getElementById('adapt-hours-modal'))document.getElementById('adapt-hours-modal').style.display='none';});
 
-// Upload docs preparation
-document.getElementById('planning-docs-input') && document.getElementById('planning-docs-input').addEventListener('change', async e => {
-  const files=Array.from(e.target.files); if (!files.length) return;
-  const st=document.getElementById('plan-ai-status'); st.textContent='Analyse des documents...';
-  const apiKey=await getStoredKey(); if (!apiKey) { st.textContent='Cle manquante.'; return; }
-  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
-  const pt=document.querySelector('[data-tab="planning"]'); if (pt) pt.classList.add('active');
-  const ptt=document.getElementById('tab-planning'); if (ptt) ptt.classList.add('active');
-  try {
-    const cbs=[];
-    for (const file of files.slice(0,3)) {
-      const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result.split(',')[1]);r.onerror=rej;r.readAsDataURL(file);});
-      if (file.type==='application/pdf') cbs.push({type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}});
-      else cbs.push({type:'image',source:{type:'base64',media_type:file.type,data:b64}});
-    }
-    const ws=getWeekStart(planState.currentDate);
-    const wd=DAYS.map((d,i)=>{const date=new Date(ws);date.setDate(date.getDate()+i);return formatDate(date);});
-    const bl=Object.entries(planState.schedule).filter(([k,v])=>v.isBlocked||v.isEvent).map(([k,v])=>k+'('+v.taskName+')').join(', ');
-    cbs.push({type:'text',text:'Jours dispo:'+wd.join(',')+'. Bloques:'+(bl||'aucun')+'. Max 3h/jour.'});
-    const SYS='Tu analyses des documents et crees un planning. JSON uniquement. Format:{"tasks":[{"taskName":"...","date":"YYYY-MM-DD","hour":9}],"reply":"..."} Sessions 1-2h reparties.';
-    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:1500,system:SYS,messages:[{role:'user',content:cbs}]})});
-    const data=await r.json(); if (!data.content||!data.content[0]) throw new Error('vide');
-    let raw=data.content[0].text.trim(); if (raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
-    const parsed=JSON.parse(raw); let placed=0;
-    parsed.tasks.forEach(item=>{const key=item.date+'_'+String(item.hour).padStart(2,'0');if(!planState.schedule[key]){planState.schedule[key]={taskName:item.taskName};placed++;}});
-    saveSchedule(); renderPlanning();
-    st.textContent=placed+' session'+(placed>1?'s':'')+' planifiee'+(placed>1?'s':'')+'.';
-    if (parsed.reply) setStatus(parsed.reply);
-    setTimeout(()=>{st.textContent='';},4000);
-  } catch(err) { st.textContent='Erreur:'+err.message; }
-  e.target.value='';
+// ── EDT Import ────────────────────────────────────────────────────────────
+document.getElementById('import-schedule-btn')?.addEventListener('click',()=>document.getElementById('schedule-file-input').click());
+let _pendingEdtFile=null;
+document.getElementById('schedule-file-input')?.addEventListener('change',e=>{
+  const file=e.target.files[0]; if(!file) return; _pendingEdtFile=file; e.target.value='';
+  // Init dates
+  const today=getTodayISO();
+  document.getElementById('edt-date-start').value=today;
+  const end=new Date(); end.setDate(end.getDate()+84);
+  document.getElementById('edt-date-end').value=formatDateLocal(end);
+  document.getElementById('edt-dates-row').style.display='none';
+  document.getElementById('edt-recurring').classList.remove('selected');
+  document.getElementById('edt-oneshot').classList.remove('selected');
+  document.getElementById('edt-modal').style.display='flex';
+});
+document.getElementById('edt-recurring')?.addEventListener('click',()=>{document.getElementById('edt-recurring').classList.add('selected');document.getElementById('edt-oneshot').classList.remove('selected');document.getElementById('edt-dates-row').style.display='none';});
+document.getElementById('edt-oneshot')?.addEventListener('click',()=>{document.getElementById('edt-oneshot').classList.add('selected');document.getElementById('edt-recurring').classList.remove('selected');document.getElementById('edt-dates-row').style.display='flex';});
+document.getElementById('edt-cancel')?.addEventListener('click',()=>{document.getElementById('edt-modal').style.display='none';_pendingEdtFile=null;});
+document.getElementById('edt-confirm')?.addEventListener('click',()=>{
+  const isR=document.getElementById('edt-recurring').classList.contains('selected');
+  const isO=document.getElementById('edt-oneshot').classList.contains('selected');
+  if(!isR&&!isO){alert('Choisis un type de planning.');return;}
+  document.getElementById('edt-modal').style.display='none';
+  if(isR) importEDT(_pendingEdtFile,true,null,null);
+  else { const ds=document.getElementById('edt-date-start').value; const de=document.getElementById('edt-date-end').value; if(!ds||!de){alert('Choisis les dates.');return;} importEDT(_pendingEdtFile,false,ds,de); }
+  _pendingEdtFile=null;
 });
 
-function showAskDocsModal(eventName) {
-  const ex=document.getElementById('ask-docs-modal'); if (ex) ex.remove();
-  const modal=document.createElement('div'); modal.id='ask-docs-modal';
-  modal.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;';
-  const inner=document.createElement('div');
-  inner.style.cssText='background:#111118;border:1px solid #2a2a3e;border-top:2px solid #7c6fcd;border-radius:8px;padding:24px;width:320px;';
-  const title=document.createElement('div'); title.style.cssText='font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:#5a5a7a;font-weight:600;margin-bottom:12px;'; title.textContent='Preparer avec des documents'; inner.appendChild(title);
-  const body=document.createElement('div'); body.style.cssText='font-size:13px;color:#c0c0d8;margin-bottom:18px;line-height:1.5;';
-  body.innerHTML='Envoie-moi des documents pour preparer <strong style="color:#9088c8;">'+(eventName||'cet evenement')+'</strong> et je reorganiserai ton planning.';
-  inner.appendChild(body);
-  const btns=document.createElement('div'); btns.style.cssText='display:flex;gap:8px;justify-content:flex-end;';
-  const no=document.createElement('button'); no.style.cssText='padding:7px 16px;background:transparent;border:1px solid #2a2a3e;border-radius:4px;color:#5a5a7a;font-size:12px;cursor:pointer;'; no.textContent='Pas maintenant'; no.addEventListener('click',()=>modal.remove()); btns.appendChild(no);
-  const yes=document.createElement('button'); yes.style.cssText='padding:7px 16px;background:#7c6fcd;border:none;border-radius:4px;color:white;font-size:12px;font-weight:500;cursor:pointer;'; yes.textContent='Oui, envoyer'; yes.addEventListener('click',()=>{modal.remove();const inp=document.getElementById('planning-docs-input');if(inp)inp.click();}); btns.appendChild(yes);
-  inner.appendChild(btns); modal.appendChild(inner); document.body.appendChild(modal);
-}
-
-// Smart runAgent with calendar detection
-const _origAgent = runAgent;
-async function runAgent(userInput) {
-  const apiKey=await getStoredKey(); if (!apiKey) { setStatus('Cle manquante.'); return; }
-  setStatus('...');
-  const profile=await getProfile(); const memCtx=await getMemoryContext();
-  let pCtx='';
-  if (profile&&profile.name) { pCtx='Assistant de '+profile.name+(profile.job?','+profile.job:'')+(profile.workStyle?' style:'+profile.workStyle:'')+(profile.projects?' projets:'+profile.projects:'')+'.'; }
-  if (memCtx) pCtx+=memCtx;
-  const today=new Date().toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
-  const SYS=pCtx+' Aujourd hui:'+today+'. Tu es assistant gestion taches et planning. Reponds JSON uniquement. Format:{"action":"add_task|add_event|add_both|list|done|unknown","task":"nom","event":{"name":"...","date":"YYYY-MM-DD","hour":9,"duration_hours":1},"schedule_tasks":false,"reply":"reponse courte","ask_docs":false} Regles: date/echeance->add_event, tache+date->add_both, ask_docs=true si examen/concours/projet, reply phrase naturelle.';
-  try {
-    const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:300,system:SYS,messages:[{role:'user',content:userInput}]})});
-    const data=await r.json(); if (!data.content||!data.content[0]) { setStatus('Erreur'); return; }
-    let raw=data.content[0].text.trim(); if (raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
-    const cmd=JSON.parse(raw);
-    if ((cmd.action==='add_event'||cmd.action==='add_both')&&cmd.event) {
-      const ev=cmd.event;
-      if (ev.date&&ev.hour!==undefined) {
-        const dur=ev.duration_hours||1;
-        for (let h=ev.hour;h<ev.hour+dur;h++) { const key=ev.date+'_'+String(h).padStart(2,'0'); planState.schedule[key]={taskName:ev.name,isEvent:true}; }
-        saveSchedule();
-        try { planState.currentDate=new Date(ev.date+'T12:00:00'); planState.view='week'; } catch(e2) {}
-        const pt=document.getElementById('tab-planning'); if (pt&&pt.classList.contains('active')) renderPlanning();
-      }
-    }
-    if ((cmd.action==='add_task'||cmd.action==='add_both')&&cmd.task) { loadTasks(tasks=>{tasks.push({task:cmd.task,done:false,priority:'medium'});saveTasks(tasks);renderTasks(tasks);}); }
-    if (cmd.action==='list') { loadTasks(tasks=>{setStatus(tasks.length+' tache'+(tasks.length>1?'s':''));renderTasks(tasks);}); }
-    if (cmd.reply&&cmd.action!=='list') setStatus(cmd.reply);
-    if (cmd.ask_docs) setTimeout(()=>showAskDocsModal(cmd.event?cmd.event.name:cmd.task),1500);
-    if (cmd.schedule_tasks) setTimeout(()=>{const pt=document.getElementById('tab-planning');if(pt&&pt.classList.contains('active'))planWithClaude();},2000);
-    if (userInput.length>20) askToSaveMemory(userInput);
-  } catch(err) { setStatus('Erreur:'+err.message); }
-}
-
-
-
-// ── SMART PLANNING ENGINE ─────────────────────────────────────────────────────
-function getTodayISO() {
-  const d = new Date();
-  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-}
-function getRevisionGoals() { return new Promise(r => chrome.storage.local.get(['revisionGoals'], d => r(d.revisionGoals || []))); }
-function saveRevisionGoals(goals) { chrome.storage.local.set({ revisionGoals: goals }); }
-function clearRevisionSessions(schedule) {
-  const c = {}; Object.entries(schedule).forEach(([k,v]) => { if (!v.isRevision) c[k]=v; }); return c;
-}
-function getFreeSlots(schedule, weeks) {
-  // Work hours: 19h-02h (next day). Split into evening same day + early morning next day.
-  const WORK_HOURS = [19,20,21,22,23,0,1]; // 19h to 01h
-  const slots = []; const start = new Date(); start.setHours(0,0,0,0);
-  const end = new Date(start); end.setDate(end.getDate()+weeks*7); const cur = new Date(start);
-  while (cur < end) {
-    const ds = cur.getFullYear()+'-'+String(cur.getMonth()+1).padStart(2,'0')+'-'+String(cur.getDate()).padStart(2,'0');
-    WORK_HOURS.forEach(h => {
-      // Hours 0,1 belong to the NEXT calendar day
-      let slotDate = ds;
-      if (h <= 1) {
-        const nextDay = new Date(cur); nextDay.setDate(cur.getDate()+1);
-        slotDate = nextDay.getFullYear()+'-'+String(nextDay.getMonth()+1).padStart(2,'0')+'-'+String(nextDay.getDate()).padStart(2,'0');
-      }
-      const key = slotDate+'_'+String(h).padStart(2,'0');
-      if (!schedule[key]) slots.push({date:slotDate,hour:h,key});
-    });
-    cur.setDate(cur.getDate()+1);
-  }
-  // Deduplicate
-  const seen = new Set();
-  return slots.filter(s => { const k=s.key; if(seen.has(k))return false; seen.add(k); return true; });
-}
-
-// ── SMART REPLAN ──────────────────────────────────────────────────────────────
-async function smartReplan() {
-  const st = document.getElementById('plan-ai-status');
-  if (st) st.textContent = 'Claude replanie...';
-  const apiKey = await getStoredKey(); if (!apiKey) { if(st) st.textContent='Cle manquante.'; return; }
-  const revisionGoals = await getRevisionGoals();
-  if (!revisionGoals.length) { planWithClaude(); return; }
-  let schedule = clearRevisionSessions(planState.schedule);
-  const todayISO = getTodayISO();
-  const futureFree = getFreeSlots(schedule,4).filter(s => s.date >= todayISO);
-  const blockedList = Object.entries(schedule).filter(([k,v])=>(v.isBlocked||v.isEvent)&&k.split('_')[0]>=todayISO).map(([k,v])=>k+'('+v.taskName+')').join(', ');
-  const deadlineCtx = Object.entries(schedule).filter(([k,v])=>v.isEvent&&k.split('_')[0]>=todayISO).map(([k,v])=>k.split('_')[0]+': '+v.taskName).join(', ');
-  const goalsStr = revisionGoals.map(g=>g.subject+' '+g.hoursPerWeek+'h/semaine priorite:'+g.priority+(g.deadline?' deadline:'+g.deadline:'')).join('; ');
-  const freeSlotsStr = futureFree.slice(0,120).map(s=>s.date+' '+s.hour+'h').join(', ');
-  const SYS = 'Tu es planificateur revisions. JSON uniquement. Format:{"sessions":[{"subject":"maths","date":"YYYY-MM-DD","hour":19,"duration":1,"label":"Rev. maths - algebre"}],"reply":"..."} REGLES ABSOLUES: 1.jamais avant '+todayISO+' 2.jamais sur bloque/event 3.heures de travail: 19h-01h UNIQUEMENT (pas avant 19h) 4.sessions 1-2h max 5.max 4h/nuit 6.utiliser UNIQUEMENT creneaux libres fournis';
-  try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:2000,system:SYS,messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Objectifs: '+goalsStr+'. Echeances: '+(deadlineCtx||'aucun')+'. Cours INTERDIT: '+(blockedList||'aucun')+'. Creneaux libres: '+(freeSlotsStr||'aucun')+'.'}]})});
-    const data = await resp.json(); if (!data.content||!data.content[0]) throw new Error('vide');
-    let raw = data.content[0].text.trim(); if (raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
-    const parsed = JSON.parse(raw); let placed = 0;
-    parsed.sessions.forEach(s => {
-      if (s.date < todayISO) return; const dur=s.duration||1;
-      for (let h=s.hour; h<s.hour+dur; h++) {
-        const key=s.date+'_'+String(h).padStart(2,'0');
-        if (!schedule[key]) { schedule[key]={taskName:s.label||('Rev. '+s.subject),isRevision:true,subject:s.subject}; placed++; }
-      }
-    });
-    planState.schedule=schedule; saveSchedule(); renderPlanning(); renderRevisionGoalsPanel();
-    if (st) { st.textContent=placed+' session'+(placed>1?'s':'')+' planifiee'+(placed>1?'s':'')+'.'; setTimeout(()=>{if(st)st.textContent='';},5000); }
-  } catch(err) { if(st) st.textContent='Erreur: '+err.message; }
-}
-
-async function planWithClaudeOrSmart() {
-  const goals = await getRevisionGoals(); if (goals.length>0) smartReplan(); else planWithClaude();
-}
-
-function renderRevisionGoalsPanel() {
-  getRevisionGoals().then(goals => {
-    const panel = document.getElementById('revision-goals-panel'); if (!panel) return;
-    if (!goals.length) { panel.innerHTML='<div class="rg-empty">Dis-moi ce que tu veux reviser (ex: "maths 3h/sem, physique 2h/sem pour le 20 juin")</div>'; return; }
-    const pm={high:'!',medium:'-',low:'.'};
-    panel.innerHTML='<div class="rg-title">Objectifs de revision</div>'+goals.map((g,i)=>'<div class="rg-item"><span class="rg-priority '+g.priority+'">'+(pm[g.priority]||'-')+'</span><span class="rg-subject">'+g.subject+'</span><span class="rg-hours">'+g.hoursPerWeek+'h/sem</span>'+(g.deadline?'<span class="rg-deadline">'+new Date(g.deadline+'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'short'})+'</span>':'')+'<span class="rg-delete" data-index="'+i+'">x</span></div>').join('')+'<button id="rg-replan-btn">Replanner maintenant</button>';
-    panel.querySelectorAll('.rg-delete').forEach(btn=>{ btn.addEventListener('click',async()=>{ const g2=await getRevisionGoals(); g2.splice(parseInt(btn.dataset.index),1); saveRevisionGoals(g2); renderRevisionGoalsPanel(); if(g2.length>0) setTimeout(()=>smartReplan(),300); }); });
-    const rb=panel.querySelector('#rg-replan-btn'); if(rb) rb.addEventListener('click',()=>smartReplan());
-  });
-}
-
-// ── EDT IMPORT RECURRING 12 SEMAINES ─────────────────────────────────────────
-document.getElementById('import-schedule-btn') && document.getElementById('import-schedule-btn').addEventListener('click', () => { document.getElementById('schedule-file-input').click(); });
-document.getElementById('schedule-file-input') && document.getElementById('schedule-file-input').addEventListener('change', async e => {
-  const file=e.target.files[0]; if(!file) return;
-  const st=document.getElementById('plan-ai-status'); st.textContent='Lecture emploi du temps...';
-  const apiKey=await getStoredKey(); if(!apiKey){st.textContent='Cle manquante.';return;}
+async function importEDT(file,recurring,dateStart,dateEnd) {
+  const st=document.getElementById('plan-ai-status'); st.textContent='Analyse de l\'emploi du temps...';
+  const apiKey=await getStoredKey(); if(!apiKey){st.textContent='Clé manquante.';return;}
   const reader=new FileReader();
   reader.onload=async()=>{
-    const b64=reader.result.split(',')[1]; const isPDF=file.type==='application/pdf'; const isImg=file.type.startsWith('image/');
-    if(!isPDF&&!isImg){st.textContent='Format non supporte.';return;}
+    const b64=reader.result.split(',')[1]; const isPDF=file.type==='application/pdf';
+    if(!isPDF&&!file.type.startsWith('image/')){st.textContent='Format non supporté.';return;}
     const cb=isPDF?{type:'document',source:{type:'base64',media_type:'application/pdf',data:b64}}:{type:'image',source:{type:'base64',media_type:file.type,data:b64}};
-    const SYS='Tu analyses un emploi du temps HEBDOMADAIRE RECURRENT. JSON uniquement. Format:{"slots":[{"day":"Lundi","hour_start":8,"hour_end":13,"label":"Cours maths"}]} Regles: hour_start=heure debut ARRONDIE AU BAS (8h45->8), hour_end=heure fin ARRONDIE AU HAUT (12h45->13). Jours: Lundi Mardi Mercredi Jeudi Vendredi Samedi Dimanche. Extrait ABSOLUMENT TOUS les creneaux y compris le matin.';
+    const SYS='Tu analyses un emploi du temps. JSON uniquement. Format:{"slots":[{"day":"Lundi","hour_start":8,"hour_end":13,"label":"Cours maths"}]} Jours: Lundi Mardi Mercredi Jeudi Vendredi Samedi Dimanche. hour_start/end arrondis vers le bas/haut. Extrait ABSOLUMENT TOUS les créneaux.';
     try {
-      const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:2000,system:SYS,messages:[{role:'user',content:[cb,{type:'text',text:'Extrait tous les creneaux. Inclus les cours du matin.'}]}]})});
-      const data=await r.json(); if(!data.content||!data.content[0]) throw new Error('vide');
+      const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:3000,system:SYS,messages:[{role:'user',content:[cb,{type:'text',text:'Extrait tous les créneaux de cet emploi du temps.'}]}]})});
+      const data=await r.json(); if(!data.content?.[0]) throw new Error('Réponse vide');
       let raw=data.content[0].text.trim(); if(raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
       const parsed=JSON.parse(raw);
+      // Map jour → index (0=Lundi ... 6=Dimanche)
       const dm={'Lundi':0,'Mardi':1,'Mercredi':2,'Jeudi':3,'Vendredi':4,'Samedi':5,'Dimanche':6};
-      const WEEKS_AHEAD=12; let blocked=0;
-      const todayBase=new Date(); todayBase.setHours(0,0,0,0);
-      const dow=todayBase.getDay(); const mondayOff=dow===0?-6:1-dow;
-      for(let w=0;w<WEEKS_AHEAD;w++){
-        const wMon=new Date(todayBase); wMon.setDate(todayBase.getDate()+mondayOff+w*7);
-        parsed.slots.forEach(function(slot){
-          const di=dm[slot.day]; if(di===undefined)return;
-          const sd=new Date(wMon); sd.setDate(wMon.getDate()+di);
-          const ds=sd.getFullYear()+'-'+String(sd.getMonth()+1).padStart(2,'0')+'-'+String(sd.getDate()).padStart(2,'0');
-          for(let h=slot.hour_start;h<slot.hour_end;h++){
-            const key=ds+'_'+String(h).padStart(2,'0');
-            if(!planState.schedule[key]){planState.schedule[key]={taskName:slot.label,isBlocked:true};blocked++;}
+      let blocked=0;
+
+      if(recurring) {
+        // 12 semaines depuis lundi de cette semaine
+        const todayBase=new Date(); todayBase.setHours(0,0,0,0);
+        const dow=todayBase.getDay(); const mondayOff=dow===0?-6:1-dow;
+        for(let w=0;w<12;w++) {
+          const wMon=new Date(todayBase); wMon.setDate(todayBase.getDate()+mondayOff+w*7);
+          parsed.slots.forEach(slot=>{
+            const di=dm[slot.day]; if(di===undefined) return;
+            const sd=new Date(wMon); sd.setDate(wMon.getDate()+di);
+            const ds=formatDateLocal(sd);
+            for(let h=slot.hour_start;h<slot.hour_end;h++){
+              const key=ds+'_'+String(h).padStart(2,'0');
+              if(!planState.schedule[key]){planState.schedule[key]={taskName:slot.label,isBlocked:true};blocked++;}
+            }
+          });
+        }
+        st.textContent=blocked+' créneaux bloqués (12 semaines).';
+      } else {
+        // Période précise : parcourir chaque jour entre dateStart et dateEnd
+        const cur=new Date(dateStart+'T00:00:00'); // CORRECTION : T00:00:00 pour éviter décalage UTC
+        const endDate=new Date(dateEnd+'T23:59:59');
+        while(cur<=endDate) {
+          const curDay=cur.getDay(); // 0=dim,1=lun...6=sam
+          // Convertir en index Mon=0...Sun=6
+          const dayIdx=curDay===0?6:curDay-1;
+          const dayName=Object.keys(dm).find(k=>dm[k]===dayIdx);
+          if(dayName) {
+            const ds=formatDateLocal(cur);
+            parsed.slots.filter(s=>s.day===dayName).forEach(slot=>{
+              for(let h=slot.hour_start;h<slot.hour_end;h++){
+                const key=ds+'_'+String(h).padStart(2,'0');
+                if(!planState.schedule[key]){planState.schedule[key]={taskName:slot.label,isBlocked:true};blocked++;}
+              }
+            });
           }
-        });
+          cur.setDate(cur.getDate()+1);
+        }
+        st.textContent=blocked+' créneaux bloqués (du '+dateStart+' au '+dateEnd+').';
       }
+
       saveSchedule(); renderPlanning();
-      st.textContent=blocked+' creneaux bloques (12 semaines).';
-      setTimeout(function(){st.textContent='';smartReplan();},1500);
+      // Naviguer vers la semaine courante pour voir le résultat
+      planState.currentDate=new Date(); planState.view='week';
+      document.querySelectorAll('.view-tab').forEach(t=>t.classList.toggle('active',t.dataset.view==='week'));
+      renderPlanning();
+      setTimeout(()=>{st.textContent='';planWithClaudeOrSmart();},2000);
     } catch(err){st.textContent='Erreur: '+err.message;}
   };
-  reader.readAsDataURL(file); e.target.value='';
-});
+  reader.readAsDataURL(file);
+}
 
-// ── IMPORT ORGANISER → PLANNING AVEC DEMANDE HEURES/JOUR ─────────────────────
-// Remplace l'import basique qui met tout en "à faire"
-function showHoursPerDayModal(tasksToSchedule) {
-  const ex = document.getElementById('hours-modal'); if (ex) ex.remove();
-  const modal = document.createElement('div'); modal.id = 'hours-modal';
-  modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;';
-  const inner = document.createElement('div');
-  inner.style.cssText = 'background:#111118;border:1px solid #2a2a3e;border-top:2px solid #7c6fcd;border-radius:8px;padding:24px;width:320px;';
-  inner.innerHTML = '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:#5a5a7a;font-weight:600;margin-bottom:12px;">Planifier dans le calendrier</div>'
-    + '<div style="font-size:13px;color:#c0c0d8;margin-bottom:16px;line-height:1.5;">Combien d\'heures veux-tu travailler par jour sur ces taches ?</div>'
-    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">'
-    + ['1h','2h','3h','4h'].map(h => '<button class="hours-btn" data-hours="'+h.replace('h','')+'" style="flex:1;padding:8px;background:#16161f;border:1px solid #2a2a3e;border-radius:4px;color:#7070a0;font-size:12px;cursor:pointer;font-family:Inter,sans-serif;transition:all 0.15s;">'+h+'</button>').join('')
-    + '</div>'
-    + '<div style="display:flex;gap:8px;justify-content:flex-end;">'
-    + '<button id="hours-skip" style="padding:7px 16px;background:transparent;border:1px solid #2a2a3e;border-radius:4px;color:#5a5a7a;font-size:12px;cursor:pointer;">Juste ajouter aux taches</button>'
-    + '</div>';
-  modal.appendChild(inner); document.body.appendChild(modal);
-
-  inner.querySelectorAll('.hours-btn').forEach(btn => {
-    btn.addEventListener('mouseover', () => { btn.style.borderColor='#7c6fcd'; btn.style.color='#9088c8'; });
-    btn.addEventListener('mouseout', () => { btn.style.borderColor='#2a2a3e'; btn.style.color='#7070a0'; });
-    btn.addEventListener('click', () => {
-      modal.remove();
-      scheduleTasksInCalendar(tasksToSchedule, parseInt(btn.dataset.hours));
-    });
-  });
-  document.getElementById('hours-skip').addEventListener('click', () => {
-    modal.remove();
-    addTasksToListOnly(tasksToSchedule);
+// ── Planification ─────────────────────────────────────────────────────────
+async function planWithClaude(){
+  const btn=document.getElementById('plan-ai-btn');const st=document.getElementById('plan-ai-status');
+  btn.disabled=true;btn.textContent='...';st.textContent='Claude organise...';
+  const apiKey=await getStoredKey();if(!apiKey){st.textContent='Clé manquante.';btn.disabled=false;btn.textContent='Planifier avec Claude';return;}
+  const todayISO=getTodayISO();const freeSlots=await getFreeSlotsFull(planState.schedule,2,todayISO);
+  loadTasks(async tasks=>{
+    const pending=tasks.filter(t=>!t.done);
+    if(!pending.length){st.textContent='Aucune tâche.';btn.disabled=false;btn.textContent='Planifier avec Claude';return;}
+    const tl=pending.map((t,i)=>i+'."'+t.task.trim()+'" priorite:'+(t.priority||'medium')).join('; ');
+    const bl=Object.entries(planState.schedule).filter(([k,v])=>v.isBlocked||v.isEvent).map(([k,v])=>k+'('+v.taskName+')').join(', ');
+    const freeSlotsStr=freeSlots.slice(0,80).map(s=>s.date+' '+s.hour+'h').join(', ');
+    const SYS='JSON uniquement. Format:{"schedule":[{"date":"YYYY-MM-DD","hour":9,"taskIndex":0,"taskName":"..."}]} Creneaux UNIQUEMENT:'+freeSlotsStr+'. Eviter:'+(bl||'aucun');
+    try{const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1000,system:SYS,messages:[{role:'user',content:'Taches:'+tl}]})});
+    const data=await r.json();if(!data.content?.[0]) throw new Error('vide');
+    let raw=data.content[0].text.trim();if(raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
+    const parsed=JSON.parse(raw);let placed=0;
+    parsed.schedule.forEach(item=>{const key=item.date+'_'+String(item.hour).padStart(2,'0');if(!planState.schedule[key]){planState.schedule[key]={taskName:item.taskName,taskIndex:item.taskIndex};placed++;}});
+    saveSchedule();renderPlanning();st.textContent=placed+' tâche(s) placée(s).';setTimeout(()=>{st.textContent='';},3000);
+    }catch(err){st.textContent='Erreur: '+err.message;}
+    btn.disabled=false;btn.textContent='Planifier avec Claude';
   });
 }
 
-async function scheduleTasksInCalendar(groups, hoursPerDay) {
-  const st = document.getElementById('plan-ai-status');
-  if (st) st.textContent = 'Claude planifie dans le calendrier...';
+function getRevisionGoals(){return new Promise(r=>chrome.storage.local.get(['revisionGoals'],d=>r(d.revisionGoals||[])));}
+function saveRevisionGoals(goals){chrome.storage.local.set({revisionGoals:goals});}
+function clearRevisionSessions(schedule){const c={};Object.entries(schedule).forEach(([k,v])=>{if(!v.isRevision)c[k]=v;});return c;}
 
-  // Switch to planning tab
-  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
-  const pt=document.querySelector('[data-tab="planning"]'); if(pt) pt.classList.add('active');
-  const ptt=document.getElementById('tab-planning'); if(ptt) ptt.classList.add('active');
-
-  const apiKey = await getStoredKey();
-  if (!apiKey) { addTasksToListOnly(groups); return; }
-
-  const todayISO = getTodayISO();
-  const freeSlots = getFreeSlots(planState.schedule, 3).filter(s => s.date >= todayISO);
-  const blockedList = Object.entries(planState.schedule)
-    .filter(([k,v]) => (v.isBlocked||v.isEvent) && k.split('_')[0] >= todayISO)
-    .map(([k,v]) => k+'('+v.taskName+')').join(', ');
-  const freeSlotsStr = freeSlots.slice(0,100).map(s=>s.date+' '+s.hour+'h').join(', ');
-
-  const tasksList = groups.map(g => {
-    const subtasks = (g.subtasks||[]).map(s => typeof s === 'string' ? s : s.name).join(', ');
-    return g.name + (g.estimated_time ? ' ('+g.estimated_time+')' : '') + (subtasks ? ': '+subtasks : '') + ' priorite:'+g.priority;
-  }).join('; ');
-
-  const SYS = 'Tu es planificateur de taches. JSON uniquement.'
-    + ' Format: {"schedule":[{"taskName":"...","date":"YYYY-MM-DD","hour":9,"duration":1,"groupIndex":0}],"reply":"..."}'
-    + ' REGLES: max '+hoursPerDay+'h de travail par nuit, UNIQUEMENT entre 19h et 01h, jamais avant '+todayISO
-    + ', jamais sur creneaux bloques, etaler selon priorite et deadline, pas de tache avant 19h.';
-
-  try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:1500,system:SYS,
-        messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Max '+hoursPerDay+'h/jour. Taches: '+tasksList+'. Cours/events INTERDITS: '+(blockedList||'aucun')+'. Creneaux libres: '+freeSlotsStr+'.'}]})
-    });
-    const data = await resp.json();
-    if (!data.content||!data.content[0]) throw new Error('vide');
-    let raw = data.content[0].text.trim();
-    if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/,'').trim();
-    const parsed = JSON.parse(raw);
-
-    // Add tasks to storage AND place in calendar
-    chrome.storage.local.get(['tasks'], result => {
-      const tasks = result.tasks || [];
-      // Add all tasks to the list
-      groups.forEach((group, gi) => {
-        tasks.push({ task: group.name, done: false, priority: group.priority, estimatedTime: group.estimated_time || null, isGroup: true });
-        (group.subtasks||[]).forEach(sub => {
-          const subName = typeof sub === 'string' ? sub : sub.name;
-          if (subName) tasks.push({ task: '  ' + subName, done: false, priority: group.priority, parentGroup: group.name });
-        });
-      });
-      chrome.storage.local.set({ tasks }, () => {
-        // Place in calendar
-        let placed = 0;
-        parsed.schedule.forEach(item => {
-          if (item.date < todayISO) return;
-          const dur = item.duration || 1;
-          for (let h = item.hour; h < item.hour + dur; h++) {
-            const key = item.date+'_'+String(h).padStart(2,'0');
-            if (!planState.schedule[key]) {
-              planState.schedule[key] = { taskName: item.taskName, isTask: true };
-              placed++;
-            }
-          }
-        });
-        saveSchedule(); renderPlanning();
-        if (st) {
-          st.textContent = placed + ' creneaux planifies.';
-          if (parsed.reply) st.textContent += ' ' + parsed.reply;
-          setTimeout(() => { if(st) st.textContent = ''; }, 4000);
-        }
-      });
-    });
-  } catch(err) {
-    if (st) st.textContent = 'Erreur: '+err.message;
-    addTasksToListOnly(groups);
-  }
-}
-
-function addTasksToListOnly(groups) {
-  chrome.storage.local.get(['tasks'], result => {
-    const tasks = result.tasks || [];
-    groups.forEach(group => {
-      tasks.push({ task: group.name, done: false, priority: group.priority, estimatedTime: group.estimated_time || null, isGroup: true });
-      (group.subtasks||[]).forEach(sub => {
-        const subName = typeof sub === 'string' ? sub : sub.name;
-        if (subName) tasks.push({ task: '  ' + subName, done: false, priority: group.priority, parentGroup: group.name });
-      });
-    });
-    chrome.storage.local.set({ tasks });
-  });
-}
-
-// ── DAILY UPDATE - Fin de journée / Mise à jour planning ──────────────────────
-let dailyCheckDone = false;
-
-function checkDailyUpdate() {
-  if (!chrome.runtime?.id) return;
-  const now = new Date();
-  const hour = now.getHours();
-  const todayISO = getTodayISO();
-
-  chrome.storage.local.get(['lastDailyCheck'], r => {
-    if (r.lastDailyCheck === todayISO) return; // Already done today
-    if (hour < 21) return; // Only after 9pm
-
-    chrome.storage.local.set({ lastDailyCheck: todayISO });
-    showDailyCheckModal(todayISO);
-  });
-}
-
-function showDailyCheckModal(todayISO) {
-  const ex = document.getElementById('daily-check-modal'); if (ex) ex.remove();
-
-  // Get today's tasks from schedule
-  chrome.storage.local.get(['planSchedule', 'tasks'], async r => {
-    const schedule = r.planSchedule || {};
-    const tasks = r.tasks || [];
-
-    const todayItems = Object.entries(schedule)
-      .filter(([k,v]) => k.startsWith(todayISO) && (v.isTask || v.isRevision) && !v.isBlocked && !v.isEvent)
-      .map(([k,v]) => ({ key: k, taskName: v.taskName, done: v.done || false }));
-
-    if (!todayItems.length) return; // Nothing to check
-
-    const modal = document.createElement('div'); modal.id = 'daily-check-modal';
-    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;';
-
-    const inner = document.createElement('div');
-    inner.style.cssText = 'background:#111118;border:1px solid #2a2a3e;border-top:2px solid #7c6fcd;border-radius:8px;padding:24px;width:340px;max-height:80vh;overflow-y:auto;';
-
-    let html = '<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:#5a5a7a;font-weight:600;margin-bottom:12px;">Bilan de la journee</div>'
-      + '<div style="font-size:13px;color:#c0c0d8;margin-bottom:16px;">Qu\'est-ce que tu as fait aujourd\'hui ?</div>'
-      + '<div id="daily-items">';
-
-    todayItems.forEach((item, i) => {
-      html += '<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #1a1a28;">'
-        + '<input type="checkbox" id="dc-'+i+'" data-key="'+item.key+'" '+(item.done?'checked':'')+' style="accent-color:#7c6fcd;cursor:pointer;">'
-        + '<label for="dc-'+i+'" style="font-size:12px;color:#c0c0d8;cursor:pointer;flex:1;">'+item.taskName+'</label>'
-        + '</div>';
-    });
-
-    html += '</div>'
-      + '<div style="margin-top:12px;"><textarea id="dc-notes" placeholder="Remarques optionnelles..." style="width:100%;min-height:50px;background:#16161f;border:1px solid #2a2a3e;border-radius:4px;color:#d4d4e0;font-size:12px;padding:8px;resize:none;outline:none;font-family:Inter,sans-serif;box-sizing:border-box;"></textarea></div>'
-      + '<div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end;">'
-      + '<button id="dc-skip" style="padding:7px 14px;background:transparent;border:1px solid #2a2a3e;border-radius:4px;color:#5a5a7a;font-size:12px;cursor:pointer;">Plus tard</button>'
-      + '<button id="dc-save" style="padding:7px 16px;background:#7c6fcd;border:none;border-radius:4px;color:white;font-size:12px;font-weight:500;cursor:pointer;">Enregistrer et mettre a jour</button>'
-      + '</div>';
-
-    inner.innerHTML = html;
-    modal.appendChild(inner);
-    document.body.appendChild(modal);
-
-    document.getElementById('dc-skip').addEventListener('click', () => modal.remove());
-    document.getElementById('dc-save').addEventListener('click', async () => {
-      const checkboxes = inner.querySelectorAll('input[type="checkbox"]');
-      const notes = document.getElementById('dc-notes').value.trim();
-      const doneKeys = [];
-      const missedKeys = [];
-
-      checkboxes.forEach(cb => {
-        if (cb.checked) doneKeys.push(cb.dataset.key);
-        else missedKeys.push(cb.dataset.key);
-      });
-
-      // Mark done items
-      doneKeys.forEach(key => {
-        if (planState.schedule[key]) {
-          planState.schedule[key] = Object.assign({}, planState.schedule[key], { done: true });
-        }
-      });
-
-      // Report missed items + reschedule
-      if (missedKeys.length > 0) {
-        await rescheduleMissedItems(missedKeys, notes);
-      } else {
-        saveSchedule();
-        renderPlanning();
-      }
-
-      modal.remove();
-
-      // Send browser notification
-      if (Notification && Notification.permission === 'granted') {
-        new Notification('Planning mis a jour', {
-          body: doneKeys.length + ' tache' + (doneKeys.length>1?'s':'') + ' terminees. Planning ajuste.',
-          icon: chrome.runtime.getURL('icon128.png')
-        });
-      }
-    });
-  });
-}
-
-async function rescheduleMissedItems(missedKeys, notes) {
-  const apiKey = await getStoredKey();
-  if (!apiKey) { saveSchedule(); renderPlanning(); return; }
-
-  const todayISO = getTodayISO();
-  const missedTasks = missedKeys.map(k => planState.schedule[k]?.taskName || k).join(', ');
-
-  // Remove missed items from today
-  missedKeys.forEach(k => { delete planState.schedule[k]; });
-
-  // Get free slots from tomorrow
-  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
-  const tomorrowISO = tomorrow.getFullYear()+'-'+String(tomorrow.getMonth()+1).padStart(2,'0')+'-'+String(tomorrow.getDate()).padStart(2,'0');
-  const freeSlots = getFreeSlots(planState.schedule, 2).filter(s => s.date >= tomorrowISO);
-  const blockedList = Object.entries(planState.schedule).filter(([k,v])=>(v.isBlocked||v.isEvent)&&k.split('_')[0]>=tomorrowISO).map(([k,v])=>k+'('+v.taskName+')').join(', ');
-  const freeSlotsStr = freeSlots.slice(0,60).map(s=>s.date+' '+s.hour+'h').join(', ');
-
-  const SYS = 'Tu replaces des taches non terminees. JSON uniquement. Format:{"schedule":[{"taskName":"...","date":"YYYY-MM-DD","hour":19,"duration":1}],"reply":"..."} REGLES: heures 19h-01h UNIQUEMENT, max 3h/nuit, dans les prochains jours, respecter creneaux libres.';
-
-  try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:800,system:SYS,
-        messages:[{role:'user',content:'Taches a replacer: '+missedTasks+'. Notes: "'+notes+'". A partir du: '+tomorrowISO+'. Cours INTERDITS: '+(blockedList||'aucun')+'. Creneaux libres: '+freeSlotsStr+'.'}]})
-    });
-    const data = await resp.json();
-    if (!data.content||!data.content[0]) throw new Error('vide');
-    let raw = data.content[0].text.trim();
-    if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/,'').trim();
-    const parsed = JSON.parse(raw);
-
-    parsed.schedule.forEach(item => {
-      const key = item.date+'_'+String(item.hour).padStart(2,'0');
-      if (!planState.schedule[key]) {
-        planState.schedule[key] = { taskName: item.taskName, isTask: true };
-      }
-    });
-  } catch(err) {
-    // Fallback: place tomorrow
-    const key = tomorrowISO+'_14';
-    missedKeys.forEach((mk, i) => {
-      const taskName = planState.schedule[mk]?.taskName || 'Tache reportee';
-      const k2 = tomorrowISO+'_'+String(14+i).padStart(2,'0');
-      if (!planState.schedule[k2]) planState.schedule[k2] = { taskName, isTask: true };
-    });
-  }
-
-  saveSchedule(); renderPlanning();
-}
-
-// Request notification permission
-if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
-  Notification.requestPermission();
-}
-
-// Check daily at 21h, 23h, 01h
-setInterval(checkDailyUpdate, 60 * 60 * 1000); // Check every hour
-checkDailyUpdate(); // Check on load too
-
-// ── STATS ─────────────────────────────────────────────────────────────────────
-function getProgressLog(){return new Promise(r=>chrome.storage.local.get(['progressLog'],d=>r(d.progressLog||[])));}
-function saveProgressLog(log){chrome.storage.local.set({progressLog:log});}
-function countRevisionHours(schedule){const b={};const t=getTodayISO();Object.entries(schedule).forEach(([k,v])=>{if(!v.isRevision)return;const d=k.split('_')[0];const s=v.subject||'Autre';if(!b[s])b[s]={total:0,past:0,future:0};b[s].total++;if(d<t)b[s].past++;else b[s].future++;});return b;}
-function countWeekRevisionHours(schedule){const ws=getWeekStart(new Date());const we=new Date(ws);we.setDate(we.getDate()+7);const wsI=ws.getFullYear()+'-'+String(ws.getMonth()+1).padStart(2,'0')+'-'+String(ws.getDate()).padStart(2,'0');const weI=we.getFullYear()+'-'+String(we.getMonth()+1).padStart(2,'0')+'-'+String(we.getDate()).padStart(2,'0');const b={};Object.entries(schedule).forEach(([k,v])=>{if(!v.isRevision)return;const d=k.split('_')[0];if(d>=wsI&&d<weI){const s=v.subject||'Autre';b[s]=(b[s]||0)+1;}});return b;}
-function computeStreak(schedule){const dd={};Object.entries(schedule).forEach(([k,v])=>{if(!v.isRevision||!v.done)return;dd[k.split('_')[0]]=true;});let s=0;const c=new Date();while(true){const d=c.getFullYear()+'-'+String(c.getMonth()+1).padStart(2,'0')+'-'+String(c.getDate()).padStart(2,'0');if(dd[d]){s++;c.setDate(c.getDate()-1);}else break;}return s;}
-
-async function renderStatsTab(){
-  const container=document.getElementById('tab-stats'); if(!container)return;
-  const schedule=planState.schedule; const goals=await getRevisionGoals(); const log=await getProgressLog();
-  const hs=countRevisionHours(schedule); const wh=countWeekRevisionHours(schedule); const streak=computeStreak(schedule);
-
-  // Compute today's progress
-  const todayISO = getTodayISO();
-  const todayItems = Object.entries(schedule).filter(([k,v])=>k.startsWith(todayISO)&&(v.isTask||v.isRevision)&&!v.isBlocked&&!v.isEvent);
-  const todayDone = todayItems.filter(([k,v])=>v.done).length;
-  const todayTotal = todayItems.length;
-  const todayPct = todayTotal > 0 ? Math.round((todayDone/todayTotal)*100) : 0;
-
-  const recent=log.slice(-5).reverse();
-  let html='<div class="stats-wrap">';
-
-  // Today progress bar
-  if (todayTotal > 0) {
-    html += '<div class="stats-today-block">';
-    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">';
-    html += '<span class="stats-title">Aujourd hui</span>';
-    html += '<span style="font-size:11px;color:#7c6fcd;font-weight:600;">'+todayDone+'/'+todayTotal+' — '+todayPct+'%</span>';
-    html += '</div>';
-    html += '<div class="stats-bar-wrap" style="height:6px;"><div class="stats-bar" style="width:'+todayPct+'%;background:linear-gradient(90deg,#7c6fcd,#9088c8);"></div></div>';
-    html += '</div>';
-  }
-
-  html += '<div class="stats-header"><div class="stats-title">Progression generale</div>';
-  if(streak>0) html+='<div class="stats-streak">'+streak+' jour'+(streak>1?'s':'')+' consecutifs 🔥</div>';
-  html+='</div>';
-  if(goals.length>0){
-    html+='<div class="stats-section-label">Par matiere</div>';
-    goals.forEach(g=>{
-      const h=hs[g.subject]||{total:0,past:0,future:0}; const w=wh[g.subject]||0; const t=g.hoursPerWeek||2;
-      const pct=Math.min(100,Math.round((w/t)*100));
-      const ln=log.filter(e=>e.subject&&e.subject.toLowerCase()===g.subject.toLowerCase()).slice(-1)[0];
-      html+='<div class="stats-subject-card"><div class="stats-subject-header"><span class="stats-subject-name">'+g.subject+'</span><span class="stats-subject-hours">'+w+'h / '+t+'h sem.</span></div><div class="stats-bar-wrap"><div class="stats-bar" style="width:'+pct+'%"></div></div>';
-      if(h.past>0) html+='<div class="stats-subject-total">'+h.past+'h au total</div>';
-      if(ln) html+='<div class="stats-subject-note">'+ln.summary+'</div>';
-      html+='</div>';
-    });
-  }
-  html+='<div class="stats-section-label" style="margin-top:12px">Rapport de travail</div>';
-  html+='<div class="stats-log-input-wrap"><textarea id="stats-log-input" placeholder="Ex: j ai fait les integrales maths, pas compris les limites. Physique pas touchee."></textarea><button id="stats-log-btn">Enregistrer + adapter planning</button></div>';
-  if(recent.length>0){html+='<div class="stats-log-list">';recent.forEach(e=>{html+='<div class="stats-log-entry"><div class="stats-log-date">'+e.date+'</div><div class="stats-log-text">'+e.summary+'</div>'+(e.adjustments?'<div class="stats-log-adj">'+e.adjustments+'</div>':'')+'</div>';});html+='</div>';}
-  else html+='<div class="stats-log-empty">Raconte-moi ce que tu as fait pour que j adapte le planning.</div>';
-  html+='</div>';
-  container.innerHTML=html;
-  const lb=document.getElementById('stats-log-btn'); if(lb) lb.addEventListener('click',processProgressReport);
-}
-
-async function processProgressReport(){
-  const input=document.getElementById('stats-log-input'); const text=input?input.value.trim():''; if(!text)return;
-  const btn=document.getElementById('stats-log-btn'); if(btn){btn.disabled=true;btn.textContent='Claude analyse...';}
-  const apiKey=await getStoredKey(); if(!apiKey){if(btn){btn.disabled=false;btn.textContent='Enregistrer + adapter planning';}return;}
-  const goals=await getRevisionGoals(); const todayISO=getTodayISO();
-  const goalsStr=goals.map(g=>g.subject+':'+g.hoursPerWeek+'h/sem'+(g.deadline?' deadline:'+g.deadline:'')).join(', ');
-  const SYS='Tu analyses un rapport de progression. JSON uniquement. Format:{"summary":"resume","subjects_done":[{"subject":"maths","hours":2,"notes":"compris X, pas Y"}],"subjects_missed":["physique"],"adjustments":"ce qu on va faire","replan":true,"boost_subjects":["maths"],"skip_subjects":[]} replan=true si besoin changer planning.';
-  try{
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:400,system:SYS,messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Objectifs: '+goalsStr+'. Rapport: "'+text+'"'}]})});
-    const data=await resp.json(); if(!data.content||!data.content[0]) throw new Error('vide');
-    let raw=data.content[0].text.trim(); if(raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
-    const parsed=JSON.parse(raw);
-    const log=await getProgressLog();
-    const entry={date:new Date().toLocaleDateString('fr-FR',{day:'numeric',month:'short'}),dateISO:todayISO,rawText:text,summary:parsed.summary||text.slice(0,80),adjustments:parsed.adjustments||'',timestamp:Date.now()};
-    if(parsed.subjects_done){parsed.subjects_done.forEach(s=>{log.push({subject:s.subject,summary:s.notes||s.subject+' fait',date:entry.date,dateISO:todayISO,timestamp:Date.now()});});}
-    log.push(entry); saveProgressLog(log);
-    if(parsed.subjects_done&&parsed.subjects_done.length>0){
-      const ds=parsed.subjects_done.map(s=>s.subject.toLowerCase()); let changed=false;
-      Object.entries(planState.schedule).forEach(([k,v])=>{if(v.isRevision&&k.startsWith(todayISO)&&ds.includes((v.subject||'').toLowerCase())){planState.schedule[k]=Object.assign({},v,{done:true});changed=true;}});
-      if(changed)saveSchedule();
-    }
-    if(parsed.replan) setTimeout(()=>smartReplanWithContext(parsed),500);
-    if(input)input.value=''; renderStatsTab();
-  }catch(err){console.error(err);}
-  if(btn){btn.disabled=false;btn.textContent='Enregistrer + adapter planning';}
-}
-
-async function smartReplanWithContext(ctx){
-  const st=document.getElementById('plan-ai-status'); if(st)st.textContent='Adaptation planning...';
-  const apiKey=await getStoredKey(); if(!apiKey)return;
-  let goals=await getRevisionGoals(); if(!goals.length)return;
-  if(ctx&&ctx.boost_subjects){goals=goals.map(g=>{if(ctx.boost_subjects.map(s=>s.toLowerCase()).includes(g.subject.toLowerCase()))return Object.assign({},g,{hoursPerWeek:Math.min(g.hoursPerWeek+1,6),boost:true});return g;});}
-  const todayISO=getTodayISO();
+async function smartReplan(){
+  const st=document.getElementById('plan-ai-status');if(st) st.textContent='Replanification...';
+  const apiKey=await getStoredKey();if(!apiKey){if(st)st.textContent='Clé manquante.';return;}
+  const goals=await getRevisionGoals();if(!goals.length){planWithClaude();return;}
   let schedule=clearRevisionSessions(planState.schedule);
-  const futureFree=getFreeSlots(schedule,4).filter(s=>s.date>=todayISO);
+  const todayISO=getTodayISO();
+  const futureFree=await getFreeSlotsFull(schedule,4,todayISO);
   const blockedList=Object.entries(schedule).filter(([k,v])=>(v.isBlocked||v.isEvent)&&k.split('_')[0]>=todayISO).map(([k,v])=>k+'('+v.taskName+')').join(', ');
-  const goalsStr=goals.map(g=>g.subject+' '+g.hoursPerWeek+'h/sem priorite:'+g.priority+(g.deadline?' deadline:'+g.deadline:'')+(g.boost?' RENFORCER':'')).join('; ');
-  const ctxStr=ctx?' Renforcer: '+(ctx.boost_subjects||[]).join(',')+'. Acquis: '+(ctx.skip_subjects||[]).join(',')+'.':'';
+  const goalsStr=goals.map(g=>g.subject+' '+g.hoursPerWeek+'h/sem priorite:'+g.priority+(g.deadline?' deadline:'+g.deadline:'')).join('; ');
   const freeSlotsStr=futureFree.slice(0,120).map(s=>s.date+' '+s.hour+'h').join(', ');
-  const SYS='Planificateur revisions. JSON uniquement. Format:{"sessions":[{"subject":"maths","date":"YYYY-MM-DD","hour":19,"duration":1,"label":"Rev. maths - limites"}],"reply":"..."} Regles ABSOLUES: jamais avant '+todayISO+', jamais sur bloque/event, heures 19h-01h UNIQUEMENT, plus de sessions RENFORCER, max 4h/nuit.';
-  try{
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:2000,system:SYS,messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Objectifs: '+goalsStr+'.'+ctxStr+' Cours INTERDIT: '+(blockedList||'aucun')+'. Creneaux libres: '+(freeSlotsStr||'aucun')+'.'}]})});
-    const data=await resp.json(); if(!data.content||!data.content[0])throw new Error('vide');
-    let raw=data.content[0].text.trim(); if(raw.startsWith('```'))raw=raw.split('```')[1].replace(/^json/,'').trim();
-    const parsed=JSON.parse(raw); let placed=0;
-    parsed.sessions.forEach(s=>{if(s.date<todayISO)return;const dur=s.duration||1;for(let h=s.hour;h<s.hour+dur;h++){const k=s.date+'_'+String(h).padStart(2,'0');if(!schedule[k]){schedule[k]={taskName:s.label||('Rev. '+s.subject),isRevision:true,subject:s.subject};placed++;}}});
-    planState.schedule=schedule;saveSchedule();renderPlanning();renderRevisionGoalsPanel();renderStatsTab();
-    if(st){st.textContent=placed+' sessions replannees.';setTimeout(()=>{if(st)st.textContent='';},5000);}
+  const SYS='Planificateur revisions. JSON uniquement. Format:{"sessions":[{"subject":"maths","date":"YYYY-MM-DD","hour":19,"duration":1,"label":"Rev. maths"}]} REGLES: jamais avant '+todayISO+', creneaux UNIQUEMENT:'+freeSlotsStr+', sessions 1-2h, max 4h/nuit.';
+  try{const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-opus-4-6',max_tokens:2000,system:SYS,messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Objectifs: '+goalsStr+'. INTERDITS: '+(blockedList||'aucun')}]})});
+  const data=await resp.json();if(!data.content?.[0]) throw new Error('vide');
+  let raw=data.content[0].text.trim();if(raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
+  const parsed=JSON.parse(raw);let placed=0;
+  parsed.sessions.forEach(s=>{if(s.date<todayISO)return;const dur=s.duration||1;for(let h=s.hour;h<s.hour+dur;h++){const key=s.date+'_'+String(h).padStart(2,'0');if(!schedule[key]){schedule[key]={taskName:s.label||'Rev. '+s.subject,isRevision:true,subject:s.subject};placed++;}}});
+  planState.schedule=schedule;saveSchedule();renderPlanning();renderRevisionGoalsPanel();
+  if(st){st.textContent=placed+' session(s) planifiée(s).';setTimeout(()=>{if(st)st.textContent='';},5000);}
   }catch(err){if(st)st.textContent='Erreur: '+err.message;}
 }
 
-setInterval(() => loadTasks(renderTasks), 30000);
+async function planWithClaudeOrSmart(){const goals=await getRevisionGoals();goals.length>0?smartReplan():planWithClaude();}
+
+function renderRevisionGoalsPanel(){
+  chrome.storage.local.get(['userProfile'],d=>{
+    const p=d.userProfile||{};const mode=p.mode||'student';const features=p.features||getDefaultFeatures(mode);
+    const panel=document.getElementById('revision-goals-panel');if(!panel)return;
+    if(mode!=='student'||!isFeatureOn(features,'revision_goals')){panel.style.display='none';return;}
+    panel.style.display='';
+    getRevisionGoals().then(goals=>{
+      if(!goals.length){panel.innerHTML='<div class="rg-empty">Dis-moi ce que tu veux réviser (ex: "maths 3h/sem, physique 2h/sem pour le 20 juin")</div>';return;}
+      const pm={high:'!',medium:'-',low:'·'};
+      panel.innerHTML='<div class="rg-title">Objectifs de révision</div>'+goals.map((g,i)=>`<div class="rg-item"><span class="rg-priority">${pm[g.priority]||'-'}</span><span class="rg-subject">${g.subject}</span><span class="rg-hours">${g.hoursPerWeek}h/sem</span>${g.deadline?`<span class="rg-deadline">${new Date(g.deadline+'T12:00:00').toLocaleDateString('fr-FR',{day:'numeric',month:'short'})}</span>`:''}<span class="rg-delete" data-index="${i}">×</span></div>`).join('')+'<button id="rg-replan-btn">Replanifier maintenant</button>';
+      panel.querySelectorAll('.rg-delete').forEach(btn=>{btn.addEventListener('click',async()=>{const g2=await getRevisionGoals();g2.splice(parseInt(btn.dataset.index),1);saveRevisionGoals(g2);renderRevisionGoalsPanel();if(g2.length>0)setTimeout(()=>smartReplan(),300);});});
+      const rb=panel.querySelector('#rg-replan-btn');if(rb) rb.addEventListener('click',()=>smartReplan());
+    });
+  });
+}
+
+// ── Organiser avec Claude — FIX JSON truncated ────────────────────────────
+// (appelé depuis content.js — on augmente max_tokens et on gère la troncature)
+// Cette fonction est dans content.js mais on expose le fix ici pour popup
+// Le vrai fix est dans content.js : max_tokens: 4000 au lieu de 2000
+
+// ── Stats ─────────────────────────────────────────────────────────────────
+function getProgressLog(){return new Promise(r=>chrome.storage.local.get(['progressLog'],d=>r(d.progressLog||[])));}
+function saveProgressLog(log){chrome.storage.local.set({progressLog:log});}
+function countWeekRevisionHours(schedule){const ws=getWeekStart(new Date());const we=new Date(ws);we.setDate(we.getDate()+7);const wsI=formatDateLocal(ws);const weI=formatDateLocal(we);const b={};Object.entries(schedule).forEach(([k,v])=>{if(!v.isRevision)return;const d=k.split('_')[0];if(d>=wsI&&d<weI){const s=v.subject||'Autre';b[s]=(b[s]||0)+1;}});return b;}
+function computeStreak(schedule){const dd={};Object.entries(schedule).forEach(([k,v])=>{if(!v.isRevision||!v.done)return;dd[k.split('_')[0]]=true;});let s=0;const c=new Date();while(true){const d=formatDateLocal(c);if(dd[d]){s++;c.setDate(c.getDate()-1);}else break;}return s;}
+
+async function renderStatsTab(){
+  const container=document.getElementById('tab-stats');if(!container)return;
+  const schedule=planState.schedule;const goals=await getRevisionGoals();const log=await getProgressLog();
+  const wh=countWeekRevisionHours(schedule);const streak=computeStreak(schedule);
+  const todayISO=getTodayISO();
+  const todayItems=Object.entries(schedule).filter(([k,v])=>k.startsWith(todayISO)&&(v.isTask||v.isRevision)&&!v.isBlocked&&!v.isEvent);
+  const todayDone=todayItems.filter(([,v])=>v.done).length;const todayTotal=todayItems.length;const todayPct=todayTotal>0?Math.round(todayDone/todayTotal*100):0;
+  const recent=log.slice(-5).reverse();
+  let html='<div class="stats-wrap">';
+  if(todayTotal>0) html+=`<div class="stats-today-block"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><span class="stats-title">Aujourd'hui</span><span style="font-size:11px;color:var(--accent);font-weight:600;">${todayDone}/${todayTotal} — ${todayPct}%</span></div><div class="stats-bar-wrap" style="height:6px;"><div class="stats-bar" style="width:${todayPct}%"></div></div></div>`;
+  html+=`<div class="stats-header"><div class="stats-title">Progression</div>${streak>0?`<div class="stats-streak">${streak} jour${streak>1?'s':''} d\'affilée</div>`:''}</div>`;
+  if(goals.length>0){html+='<div class="stats-section-label">Par matière</div>';goals.forEach(g=>{const w=wh[g.subject]||0;const t=g.hoursPerWeek||2;const pct=Math.min(100,Math.round(w/t*100));html+=`<div class="stats-subject-card"><div class="stats-subject-header"><span class="stats-subject-name">${g.subject}</span><span class="stats-subject-hours">${w}h / ${t}h sem.</span></div><div class="stats-bar-wrap"><div class="stats-bar" style="width:${pct}%"></div></div></div>`;});}
+  html+='<div class="stats-section-label" style="margin-top:12px">Rapport de travail</div><div class="stats-log-input-wrap"><textarea id="stats-log-input" placeholder="Ce que tu as fait aujourd\'hui..."></textarea><button id="stats-log-btn">Enregistrer et adapter le planning</button></div>';
+  if(recent.length>0){html+='<div class="stats-log-list">';recent.forEach(e=>{html+=`<div class="stats-log-entry"><div class="stats-log-date">${e.date}</div><div class="stats-log-text">${e.summary}</div>${e.adjustments?`<div class="stats-log-adj">${e.adjustments}</div>`:''}</div>`;});html+='</div>';}else html+='<div class="stats-log-empty">Raconte-moi ce que tu as fait.</div>';
+  html+='</div>';container.innerHTML=html;
+  document.getElementById('stats-log-btn')?.addEventListener('click',processProgressReport);
+}
+
+async function processProgressReport(){
+  const input=document.getElementById('stats-log-input');const text=input?.value.trim();if(!text)return;
+  const btn=document.getElementById('stats-log-btn');if(btn){btn.disabled=true;btn.textContent='Analyse...';}
+  const apiKey=await getStoredKey();if(!apiKey){if(btn){btn.disabled=false;btn.textContent='Enregistrer et adapter le planning';}return;}
+  const goals=await getRevisionGoals();const todayISO=getTodayISO();
+  const goalsStr=goals.map(g=>g.subject+':'+g.hoursPerWeek+'h/sem').join(', ');
+  const SYS='JSON uniquement. Format:{"summary":"resume","adjustments":"...","replan":true}';
+  try{const resp=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:300,system:SYS,messages:[{role:'user',content:'Aujourd hui: '+todayISO+'. Objectifs: '+goalsStr+'. Rapport: "'+text+'"'}]})});
+  const data=await resp.json();if(!data.content?.[0]) throw new Error('vide');
+  let raw=data.content[0].text.trim();if(raw.startsWith('```')) raw=raw.split('```')[1].replace(/^json/,'').trim();
+  const parsed=JSON.parse(raw);
+  const log=await getProgressLog();log.push({date:new Date().toLocaleDateString('fr-FR',{day:'numeric',month:'short'}),dateISO:todayISO,summary:parsed.summary||text.slice(0,80),adjustments:parsed.adjustments||'',timestamp:Date.now()});
+  saveProgressLog(log);if(parsed.replan) setTimeout(()=>smartReplan(),500);if(input)input.value='';renderStatsTab();
+  }catch(err){console.error(err);}
+  if(btn){btn.disabled=false;btn.textContent='Enregistrer et adapter le planning';}
+}
+
+// ── Mémoire ───────────────────────────────────────────────────────────────
+function getMemory(){return new Promise(r=>chrome.storage.local.get(['claudeMemory'],d=>r(d.claudeMemory||[])));}
+async function getMemoryContext(){const m=await getMemory();if(!m.length)return '';return '\nMémoire: '+m.map(x=>x.text).join('; ');}
+async function addMemory(text){const m=await getMemory();m.push({text:text.trim(),date:new Date().toLocaleDateString('fr-FR',{day:'numeric',month:'short',year:'numeric'}),timestamp:Date.now()});chrome.storage.local.set({claudeMemory:m});}
+async function askToSaveMemory(userInput){
+  const apiKey=await getStoredKey();if(!apiKey)return;
+  try{const r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-haiku-4-5-20251001',max_tokens:80,system:"Réponds par une phrase courte (max 80 chars) si le message contient une info importante à retenir. Sinon réponds exactement: NON",messages:[{role:'user',content:'Message: "'+userInput+'"'}]})});
+  const data=await r.json();const s=data.content?.[0]?.text?.trim();
+  if(s&&s!=='NON'&&!s.startsWith('NON')) showMemoryModal(s);
+  }catch(e){}
+}
+function showMemoryModal(suggestion){const modal=document.getElementById('memory-modal');if(!modal)return;document.getElementById('memory-modal-suggestion').textContent=suggestion||'';document.getElementById('memory-modal-input').value=suggestion||'';modal.style.display='flex';setTimeout(()=>document.getElementById('memory-modal-input')?.focus(),100);}
+function hideMemoryModal(){const m=document.getElementById('memory-modal');if(m)m.style.display='none';}
+document.getElementById('memory-modal-skip')?.addEventListener('click',hideMemoryModal);
+document.getElementById('memory-modal-save')?.addEventListener('click',()=>{const t=document.getElementById('memory-modal-input')?.value.trim();if(t)addMemory(t);hideMemoryModal();});
+document.getElementById('memory-modal-input')?.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();document.getElementById('memory-modal-save')?.click();}if(e.key==='Escape')hideMemoryModal();});
+function renderMemoryList(){getMemory().then(memories=>{const list=document.getElementById('memory-list');const empty=document.getElementById('memory-empty');if(!memories.length){if(list)list.innerHTML='';if(empty)empty.style.display='block';return;}if(empty)empty.style.display='none';if(!list)return;list.innerHTML=memories.map((m,i)=>`<div class="memory-item"><div class="memory-text">${m.text}</div><div class="memory-meta"><span class="memory-date">${m.date}</span><span class="memory-delete" data-index="${i}">supprimer</span></div></div>`).join('');list.querySelectorAll('.memory-delete').forEach(btn=>{btn.addEventListener('click',async()=>{const mems=await getMemory();mems.splice(parseInt(btn.dataset.index),1);chrome.storage.local.set({claudeMemory:mems},renderMemoryList);});});}); }
+
+// ── Ask docs ──────────────────────────────────────────────────────────────
+function showAskDocsModal(eventName){const ex=document.getElementById('ask-docs-modal');if(ex)ex.remove();const modal=document.createElement('div');modal.id='ask-docs-modal';modal.style.cssText='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:9999;display:flex;align-items:center;justify-content:center;font-family:Inter,sans-serif;';const inner=document.createElement('div');inner.style.cssText='background:var(--bg);border:1px solid var(--border2);border-top:2px solid var(--accent);border-radius:8px;padding:24px;width:320px;';inner.innerHTML=`<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:var(--text2);font-weight:600;margin-bottom:12px;">Préparer avec des documents</div><div style="font-size:13px;color:var(--text);margin-bottom:18px;line-height:1.5;">Des documents pour préparer <strong style="color:var(--accent2);">${eventName||'cet événement'}</strong> ?</div><div style="display:flex;gap:8px;justify-content:flex-end;"><button id="adm-no" style="padding:7px 16px;background:transparent;border:1px solid var(--border2);border-radius:4px;color:var(--text2);font-size:12px;cursor:pointer;">Pas maintenant</button><button id="adm-yes" style="padding:7px 16px;background:var(--accent);border:none;border-radius:4px;color:white;font-size:12px;font-weight:500;cursor:pointer;">Envoyer</button></div>`;
+modal.appendChild(inner);document.body.appendChild(modal);
+document.getElementById('adm-no').addEventListener('click',()=>modal.remove());
+document.getElementById('adm-yes').addEventListener('click',()=>{modal.remove();document.getElementById('planning-docs-input')?.click();});}
+
+setInterval(()=>loadTasks(renderTasks),30000);

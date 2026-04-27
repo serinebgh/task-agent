@@ -16,11 +16,12 @@
       <div class="ob-step-dot" data-step="3"></div>
       <div class="ob-step-dot" data-step="4"></div>
       <div class="ob-step-dot" data-step="5"></div>
+      <div class="ob-step-dot" data-step="6"></div>
     </div>
   </div>
   <div id="ob-main">
     <div id="ob-meta">
-      <span id="ob-step-label">01 / 05</span>
+      <span id="ob-step-label">01 / 06</span>
       <div id="ob-progress"><div id="ob-progress-bar"></div></div>
     </div>
     <div id="ob-questions">
@@ -31,29 +32,51 @@
       </div>
       <div class="ob-question" data-step="2">
         <p class="ob-q-hint">Pour que Claude comprenne ton contexte.</p>
-        <h2 class="ob-q-label">Quel est ton métier ?</h2>
-        <input type="text" class="ob-input" id="ob-job" placeholder="Ex : développeur web, chef de projet, designer..." autocomplete="off" />
+        <h2 class="ob-q-label">Quel est ton métier ou ta situation ?</h2>
+        <input type="text" class="ob-input" id="ob-job" placeholder="Ex : étudiant en médecine, chef de projet, freelance..." autocomplete="off" />
+        <p class="ob-q-sub">Claude détectera automatiquement le meilleur mode pour toi.</p>
       </div>
       <div class="ob-question" data-step="3">
-        <p class="ob-q-hint">Ce sur quoi tu travailles en ce moment.</p>
-        <h2 class="ob-q-label">Tes projets actuels ?</h2>
-        <textarea class="ob-input ob-textarea" id="ob-projects" placeholder="Décris brièvement tes projets en cours..."></textarea>
+        <p class="ob-q-hint">Mode détecté</p>
+        <h2 class="ob-q-label" id="ob-mode-title">Mode Étudiant</h2>
+        <div id="ob-mode-card"></div>
+        <p class="ob-q-sub" style="margin-top:12px">Tu pourras changer à tout moment depuis ton profil.</p>
       </div>
       <div class="ob-question" data-step="4">
-        <p class="ob-q-hint">Claude s'adaptera à ta façon de travailler.</p>
-        <h2 class="ob-q-label">Comment tu travailles le mieux ?</h2>
-        <div class="ob-chips" id="ob-work-style">
-          <span class="ob-chip" data-val="le matin">Plutôt le matin</span>
-          <span class="ob-chip" data-val="le soir">Plutôt le soir</span>
-          <span class="ob-chip" data-val="en sprints intensifs">Sprints intensifs</span>
-          <span class="ob-chip" data-val="de façon régulière">Régulier et constant</span>
-          <span class="ob-chip" data-val="en multitâche">Multitâche</span>
-          <span class="ob-chip" data-val="une tâche à la fois">Une tâche à la fois</span>
-        </div>
-        <input type="hidden" id="ob-style-value" />
+        <p class="ob-q-hint">Ce sur quoi tu travailles en ce moment.</p>
+        <h2 class="ob-q-label">Tes projets ou cours actuels ?</h2>
+        <textarea class="ob-input ob-textarea" id="ob-projects" placeholder="Décris brièvement..."></textarea>
       </div>
       <div class="ob-question" data-step="5">
-        <p class="ob-q-hint">Optionnel, mais utile.</p>
+        <p class="ob-q-hint">Pour planifier intelligemment.</p>
+        <h2 class="ob-q-label">Tes heures de travail habituelles ?</h2>
+        <p class="ob-q-sub">Claude placera tes tâches dans ces créneaux.</p>
+        <div class="ob-hours-row">
+          <div class="ob-hours-group">
+            <label class="ob-hours-label">De</label>
+            <select class="ob-hours-select" id="ob-work-start">
+              <option value="6">6h</option><option value="7">7h</option><option value="8">8h</option>
+              <option value="9">9h</option><option value="10">10h</option><option value="12">12h</option>
+              <option value="14">14h</option><option value="16">16h</option><option value="17">17h</option>
+              <option value="18">18h</option><option value="19" selected>19h</option>
+              <option value="20">20h</option><option value="21">21h</option>
+            </select>
+          </div>
+          <div class="ob-hours-sep">→</div>
+          <div class="ob-hours-group">
+            <label class="ob-hours-label">À</label>
+            <select class="ob-hours-select" id="ob-work-end">
+              <option value="17">17h</option><option value="18">18h</option><option value="19">19h</option>
+              <option value="20">20h</option><option value="21">21h</option><option value="22">22h</option>
+              <option value="23" selected>23h</option><option value="0">00h</option>
+              <option value="1">01h</option><option value="2">02h</option>
+            </select>
+          </div>
+        </div>
+        <p class="ob-hours-note">Modifiable jour par jour depuis le planning.</p>
+      </div>
+      <div class="ob-question" data-step="6">
+        <p class="ob-q-hint">Optionnel mais utile.</p>
         <h2 class="ob-q-label">Un truc à savoir sur toi ?</h2>
         <textarea class="ob-input ob-textarea" id="ob-extra" placeholder="Ex : je sous-estime souvent mes tâches..."></textarea>
       </div>
@@ -69,20 +92,20 @@
 <div id="app">
   <div id="app-header">
     <div id="app-brand">TA</div>
-    <nav id="nav-tabs">
-      <button class="nav-tab active" data-tab="tasks">Taches</button>
-      <button class="nav-tab" data-tab="planning">Planning</button>
-      <button class="nav-tab" data-tab="stats">Stats</button>
-      <button class="nav-tab" data-tab="profile">Profil</button>
-      <button class="nav-tab" data-tab="keys">API</button>
-    </nav>
+    <div id="app-mode-badge"></div>
+    <!-- Sélecteur de planning actif (visible si double mode) -->
+    <div id="planning-switcher" style="display:none">
+      <button class="ps-btn active" data-plan="student">Étudiant</button>
+      <button class="ps-btn" data-plan="pro">Pro</button>
+    </div>
+    <nav id="nav-tabs"></nav>
   </div>
 
-  <!-- Tab Taches -->
+  <!-- Tab Tâches -->
   <div id="tab-tasks" class="tab-content active">
     <div id="task-list"></div>
     <div class="input-row">
-      <input type="text" id="user-input" placeholder="Dis-moi ce que tu as... (concours le 18 avril, reunion lundi 10h...)" autofocus />
+      <input type="text" id="user-input" placeholder="Dis-moi ce que tu as à faire..." autofocus />
       <button id="send-btn">+</button>
     </div>
     <div id="status"></div>
@@ -103,12 +126,22 @@
       </div>
     </div>
 
+    <div id="planning-filter-bar">
+      <div id="planning-view-toggle">
+        <button class="plan-toggle-btn active" data-filter="all">Tout</button>
+        <button class="plan-toggle-btn" data-filter="focus">Révisions</button>
+      </div>
+      <div class="planning-top-actions">
+        <button id="adapt-hours-btn">Adapter les heures</button>
+        <button id="import-schedule-btn">Importer EDT</button>
+      </div>
+    </div>
+
     <div id="planning-actions-bar">
-    <button id="plan-ai-btn">Planifier avec Claude</button>
-    <button id="import-schedule-btn">Emploi du temps</button>
-  </div>
-  <input type="file" id="schedule-file-input" accept=".pdf,image/*" style="display:none" />
-  <input type="file" id="planning-docs-input" accept=".pdf,image/*" multiple style="display:none" />
+      <button id="plan-ai-btn">Planifier avec Claude</button>
+    </div>
+    <input type="file" id="schedule-file-input" accept=".pdf,image/*" style="display:none" />
+    <input type="file" id="planning-docs-input" accept=".pdf,image/*" multiple style="display:none" />
     <div id="plan-ai-status"></div>
     <div id="revision-goals-panel"></div>
 
@@ -123,35 +156,102 @@
     </div>
   </div>
 
-
   <!-- Tab Stats -->
-  <div id="tab-stats" class="tab-content">
-    <div id="stats-loading" style="color:#3d3d5c;font-size:12px;padding:20px 0;text-align:center">Chargement...</div>
+  <div id="tab-stats" class="tab-content"></div>
+
+  <!-- Tab Pipeline (pro) -->
+  <div id="tab-pipeline" class="tab-content">
+    <div id="pipeline-board">
+      <div class="pipeline-col" data-status="todo">
+        <div class="pipeline-col-header">À faire</div>
+        <div class="pipeline-col-body" id="pipeline-todo"></div>
+      </div>
+      <div class="pipeline-col" data-status="doing">
+        <div class="pipeline-col-header">En cours</div>
+        <div class="pipeline-col-body" id="pipeline-doing"></div>
+      </div>
+      <div class="pipeline-col" data-status="done">
+        <div class="pipeline-col-header">Terminé</div>
+        <div class="pipeline-col-body" id="pipeline-done"></div>
+      </div>
+    </div>
   </div>
 
   <!-- Tab Profil -->
   <div id="tab-profile" class="tab-content">
     <div id="profile-greeting"></div>
+
+    <div class="profile-mode-switch">
+      <div class="pms-label">Mode actif</div>
+      <div class="pms-row">
+        <button class="pms-btn" id="pms-student" data-mode="student">Étudiant</button>
+        <button class="pms-btn" id="pms-pro" data-mode="pro">Professionnel</button>
+      </div>
+      <div class="pms-double-row">
+        <label class="pms-double-label">
+          <input type="checkbox" id="pms-double-mode" />
+          <span>Activer les deux modes simultanément</span>
+        </label>
+        <p class="pms-note">Un planning séparé pour chaque mode. Switche depuis le header.</p>
+      </div>
+    </div>
+
     <div class="profile-field">
       <label>Prénom</label>
       <input type="text" id="p-name" placeholder="—" />
     </div>
     <div class="profile-field">
-      <label>Métier</label>
+      <label>Métier / Situation</label>
       <input type="text" id="p-job" placeholder="—" />
     </div>
     <div class="profile-field">
-      <label>Projets en cours</label>
+      <label id="p-projects-label">Projets / cours en cours</label>
       <textarea id="p-projects" placeholder="—"></textarea>
-    </div>
-    <div class="profile-field">
-      <label>Style de travail</label>
-      <input type="text" id="p-style" placeholder="—" />
     </div>
     <div class="profile-field">
       <label>À savoir</label>
       <textarea id="p-extra" placeholder="—"></textarea>
     </div>
+
+    <div class="profile-field profile-hours-field">
+      <label>Heures de travail habituelles</label>
+      <div class="profile-hours-row">
+        <span class="profile-hours-label">De</span>
+        <select id="p-work-start" class="profile-hours-select">
+          <option value="6">6h</option><option value="7">7h</option><option value="8">8h</option>
+          <option value="9">9h</option><option value="10">10h</option><option value="12">12h</option>
+          <option value="14">14h</option><option value="16">16h</option><option value="17">17h</option>
+          <option value="18">18h</option><option value="19">19h</option>
+          <option value="20">20h</option><option value="21">21h</option>
+        </select>
+        <span class="profile-hours-sep">→</span>
+        <span class="profile-hours-label">À</span>
+        <select id="p-work-end" class="profile-hours-select">
+          <option value="17">17h</option><option value="18">18h</option><option value="19">19h</option>
+          <option value="20">20h</option><option value="21">21h</option><option value="22">22h</option>
+          <option value="23">23h</option><option value="0">00h</option>
+          <option value="1">01h</option><option value="2">02h</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="profile-field">
+      <label>Thème visuel</label>
+      <div class="theme-picker-row">
+        <button class="theme-pick-btn active" data-theme="dark" id="theme-dark">
+          <span class="theme-swatch" style="background:#111118;border-color:#7c6fcd"></span>Dark Pro
+        </button>
+        <button class="theme-pick-btn" data-theme="light" id="theme-light">
+          <span class="theme-swatch" style="background:#f4f4f8;border-color:#5050b0"></span>Slate Light
+        </button>
+      </div>
+    </div>
+
+    <div class="profile-features-section">
+      <div class="profile-features-title">Features actives</div>
+      <div id="features-toggles-list"></div>
+    </div>
+
     <div class="profile-actions">
       <button id="save-profile-btn">Enregistrer</button>
       <span id="profile-status"></span>
@@ -186,10 +286,9 @@
     </div>
     <div id="keys-status"></div>
   </div>
-
 </div>
 
-<script src="popup.js"></script>
+<!-- ── Modals ──────────────────────────────────────────────────────────────── -->
 <div id="memory-modal" style="display:none">
   <div id="memory-modal-inner">
     <div id="memory-modal-title">Retenir quelque chose ?</div>
@@ -201,5 +300,80 @@
     </div>
   </div>
 </div>
+
+<div id="adapt-hours-modal" style="display:none">
+  <div id="adapt-hours-inner">
+    <div id="adapt-hours-title">Adapter les heures de travail</div>
+    <p class="adapt-hours-desc">Heures habituelles : <strong id="adapt-hours-default"></strong></p>
+    <div class="adapt-hours-row">
+      <div class="adapt-hours-group">
+        <label>De</label>
+        <select id="adapt-start">
+          <option value="6">6h</option><option value="7">7h</option><option value="8">8h</option>
+          <option value="9">9h</option><option value="10">10h</option><option value="12">12h</option>
+          <option value="14">14h</option><option value="16">16h</option><option value="17">17h</option>
+          <option value="18">18h</option><option value="19">19h</option>
+          <option value="20">20h</option><option value="21">21h</option>
+        </select>
+      </div>
+      <div class="adapt-hours-sep">→</div>
+      <div class="adapt-hours-group">
+        <label>À</label>
+        <select id="adapt-end">
+          <option value="17">17h</option><option value="18">18h</option><option value="19">19h</option>
+          <option value="20">20h</option><option value="21">21h</option><option value="22">22h</option>
+          <option value="23">23h</option><option value="0">00h</option>
+          <option value="1">01h</option><option value="2">02h</option>
+        </select>
+      </div>
+    </div>
+    <div class="adapt-days-row">
+      <label>Pour les</label>
+      <input type="number" id="adapt-days" value="1" min="1" max="30" />
+      <span>prochain(s) jour(s)</span>
+    </div>
+    <p class="adapt-hours-scope-note"><span id="adapt-scope-preview"></span></p>
+    <div class="adapt-btns">
+      <button id="adapt-hours-cancel">Annuler</button>
+      <button id="adapt-hours-save">Appliquer et replanifier</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal EDT -->
+<div id="edt-modal" style="display:none">
+  <div id="edt-modal-inner">
+    <div id="edt-modal-title">Type d'emploi du temps</div>
+    <p class="edt-modal-desc">Cet emploi du temps est-il le même chaque semaine ?</p>
+    <div class="edt-choice-row">
+      <button class="edt-choice-btn" id="edt-recurring">
+        <span class="edt-choice-icon">↻</span>
+        <span class="edt-choice-label">Récurrent</span>
+        <span class="edt-choice-sub">Même planning chaque semaine</span>
+      </button>
+      <button class="edt-choice-btn" id="edt-oneshot">
+        <span class="edt-choice-icon">→</span>
+        <span class="edt-choice-label">Période précise</span>
+        <span class="edt-choice-sub">Du … au …</span>
+      </button>
+    </div>
+    <div id="edt-dates-row" style="display:none">
+      <div class="edt-date-group">
+        <label>Du</label>
+        <input type="date" id="edt-date-start" />
+      </div>
+      <div class="edt-date-group">
+        <label>Au</label>
+        <input type="date" id="edt-date-end" />
+      </div>
+    </div>
+    <div class="adapt-btns" style="margin-top:16px">
+      <button id="edt-cancel">Annuler</button>
+      <button id="edt-confirm">Importer</button>
+    </div>
+  </div>
+</div>
+
+<script src="popup.js"></script>
 </body>
 </html>

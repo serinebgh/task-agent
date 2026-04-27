@@ -188,7 +188,7 @@ panel.innerHTML = `
     <input type="text" id="bubble-reminders" placeholder="Rappels : 60, 30, 10 min avant (optionnel)" />
     <button id="bubble-add-btn">Ajouter</button>
     <button id="bubble-organize-btn">Organiser avec Claude</button>
-    <button id="bubble-exam-btn">🎯 Mode Exam</button>
+    <button id="bubble-exam-btn"> Mode Exam</button>
   </div>
   <div id="bubble-status"></div>
 `;
@@ -661,51 +661,94 @@ document.getElementById('organize-send-btn').addEventListener('click', runOrgani
 async function runOrganize() {
   const textInput = document.getElementById('organize-input').value.trim();
   if (!textInput && attachedFiles.length === 0) return;
+ 
   const resultDiv = document.getElementById('organize-result');
   const actionsDiv = document.getElementById('organize-actions');
   const btn = document.getElementById('organize-send-btn');
   btn.textContent = 'Analyse en cours...'; btn.disabled = true;
   resultDiv.innerHTML = '<div class="organize-loading">Analyse en cours...</div>';
   actionsDiv.style.display = 'none';
+ 
   const apiKey = await getApiKey();
   if (!apiKey) {
     resultDiv.innerHTML = '<div class="organize-error">Clé Anthropic introuvable.</div>';
     btn.textContent = 'Analyser et organiser'; btn.disabled = false; return;
   }
+ 
   const memCtx = await getMemoryContext();
-  const SYSTEM = `Tu es un expert en gestion de taches.${memCtx ? memCtx + '\n\n' : ''}Retourne UNIQUEMENT un JSON valide.
-Format : {"summary":"...","groups":[{"name":"...","priority":"high|medium|low","deadline":"...ou null","estimated_time":"...ou null","subtasks":[{"name":"...","time":"..."}]}],"recommended_order":["..."],"total_estimated":"..."}`;
+  const SYSTEM = `Tu es un expert en gestion de tâches.${memCtx ? ' ' + memCtx + '\n\n' : ''}
+Retourne UNIQUEMENT un JSON valide, sans markdown, sans backticks, sans texte avant ou après.
+Format EXACT : {"summary":"...","groups":[{"name":"...","priority":"high|medium|low","deadline":"...ou null","estimated_time":"...ou null","subtasks":[{"name":"...","time":"..."}]}],"recommended_order":["..."],"total_estimated":"..."}
+IMPORTANT: Le JSON doit être complet et bien fermé. Si tu manques de place, réduis le nombre de sous-tâches plutôt que de tronquer.`;
+ 
   try {
     const contentBlocks = [];
     if (textInput) contentBlocks.push({ type: 'text', text: textInput });
-    for (const file of attachedFiles) {
+ 
+    // Limiter à 3 fichiers max pour éviter la troncature
+    const filesToProcess = attachedFiles.slice(0, 3);
+    if (attachedFiles.length > 3) {
+      resultDiv.innerHTML = '<div class="organize-loading">Analyse de 3 fichiers sur ' + attachedFiles.length + ' (limite)...</div>';
+    }
+ 
+    for (const file of filesToProcess) {
       const base64 = await fileToBase64(file);
       if (file.type === 'application/pdf')
         contentBlocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } });
       else
         contentBlocks.push({ type: 'image', source: { type: 'base64', media_type: file.type, data: base64 } });
     }
-    if (!contentBlocks.length) return;
+ 
+    if (!contentBlocks.length) { btn.textContent = 'Analyser et organiser'; btn.disabled = false; return; }
+ 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-      body: JSON.stringify({ model: 'claude-opus-4-6', max_tokens: 2000, system: SYSTEM, messages: [{ role: 'user', content: contentBlocks }] })
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: 'claude-opus-4-6',
+        max_tokens: 4000, // AUGMENTÉ de 2000 à 4000
+        system: SYSTEM,
+        messages: [{ role: 'user', content: contentBlocks }]
+      })
     });
+ 
     const data = await response.json();
     if (!data.content?.[0]) throw new Error('Réponse vide');
+ 
+    // Vérifier si la réponse a été tronquée
+    if (data.stop_reason === 'max_tokens') {
+      resultDiv.innerHTML = '<div class="organize-error">Trop de contenu à analyser. Essaie avec moins de fichiers (3 max) ou un texte plus court.</div>';
+      btn.textContent = 'Analyser et organiser'; btn.disabled = false; return;
+    }
+ 
     let raw = data.content[0].text.trim();
+    // Nettoyer les backticks markdown si présents
     if (raw.startsWith('```')) raw = raw.split('```')[1].replace(/^json/, '').trim();
+    // S'assurer que le JSON est complet
+    if (!raw.endsWith('}')) {
+      resultDiv.innerHTML = '<div class="organize-error">Réponse incomplète. Essaie avec moins de fichiers.</div>';
+      btn.textContent = 'Analyser et organiser'; btn.disabled = false; return;
+    }
+ 
     const parsed = JSON.parse(raw);
     generatedTasks = parsed.groups || [];
     renderOrganizeResult(parsed);
     actionsDiv.style.display = 'flex';
-    // Scroll automatique vers les actions
-    setTimeout(() => {
-      actionsDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }, 100);
+    setTimeout(() => { actionsDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); }, 100);
+ 
   } catch (err) {
-    resultDiv.innerHTML = '<div class="organize-error">Erreur : ' + err.message + '</div>';
+    let msg = err.message;
+    if (msg.includes('JSON') || msg.includes('Unterminated') || msg.includes('position')) {
+      msg = 'Trop de contenu. Essaie avec 2-3 fichiers maximum, ou utilise uniquement du texte.';
+    }
+    resultDiv.innerHTML = '<div class="organize-error">Erreur : ' + msg + '</div>';
   }
+ 
   btn.textContent = 'Analyser et organiser'; btn.disabled = false;
 }
 
